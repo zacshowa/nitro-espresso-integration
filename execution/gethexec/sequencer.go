@@ -422,9 +422,6 @@ func ctxWithTimeout(ctx context.Context, timeout time.Duration) (context.Context
 }
 
 func (s *Sequencer) PublishTransaction(parentCtx context.Context, tx *types.Transaction, options *arbitrum_types.ConditionalOptions) error {
-
-	log.Info("Entering PublishTransaction", "context", parentCtx, "transaction", tx, "options", options)
-
 	// Only try to acquire Rlock and check for hard threshold if l1reader is not nil
 	// And hard threshold was enabled, this prevents spamming of read locks when not needed
 	if s.l1Reader != nil && s.config().ExpectedSurplusHardThreshold != "default" {
