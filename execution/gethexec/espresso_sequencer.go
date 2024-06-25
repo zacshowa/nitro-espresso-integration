@@ -126,6 +126,9 @@ func (s *EspressoSequencer) Start(ctxIn context.Context) error {
 
 // Required methods for the TransactionPublisher interface
 func (s *EspressoSequencer) PublishTransaction(parentCtx context.Context, tx *types.Transaction, options *arbitrum_types.ConditionalOptions) error {
+
+	log.Info("Entering Espresso PublishTransaction() in espresso_sequencer.go", "context", parentCtx, "transaction", tx, "options", options)
+
 	var txnBytes, err = tx.MarshalBinary()
 	if err != nil {
 		return err
