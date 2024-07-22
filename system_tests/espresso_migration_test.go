@@ -6,7 +6,6 @@ import (
 
 	espressoOspGen "github.com/offchainlabs/nitro/solgen/go/ospgen"
 	"github.com/offchainlabs/nitro/solgen/go/upgrade_executorgen"
-	"github.com/stretchr/testify/require"
 	"math/big"
 	"os/exec"
 	"strings"
@@ -125,8 +124,6 @@ func TestEspressoMigration(t *testing.T) {
 
 	callData, err := callDataAbi.Pack("PostUpgradeInit") //TODO: I left off here and I need to figure out wasmmodule root stuff to construct the conract call
 	Require(t, err)
-
-	require.NoError(t, err)
 
 	res, err := upgradeExecutor.ExecuteCall(&upgradeTransactionOpts, challengeManagerAddress, callData)
 	Require(t, err)
