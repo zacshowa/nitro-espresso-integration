@@ -74,7 +74,7 @@ func runEspresso(t *testing.T, ctx context.Context) func() {
 	return shutdown
 }
 
-func createL2Node(ctx context.Context, t *testing.T, hotshot_url string, builder *NodeBuilder) (*TestClient, info, func()) {
+func createL2Node(ctx context.Context, t *testing.T, hotshot_url string, builder *NodeBuilder, is_hotshot bool) (*TestClient, info, func()) {
 	nodeConfig := arbnode.ConfigDefaultL1Test()
 	builder.takeOwnership = false
 	nodeConfig.BatchPoster.Enable = false
@@ -96,6 +96,12 @@ func createL2Node(ctx context.Context, t *testing.T, hotshot_url string, builder
 	nodeConfig.Feed.Output.Addr = "0.0.0.0"
 	nodeConfig.Feed.Output.Enable = true
 	nodeConfig.Feed.Output.Port = fmt.Sprintf("%d", broadcastPort)
+
+	if !is_hotshot {
+		nodeConfig.Espresso = false
+		builder.execConfig.Sequencer.Espresso = false
+		builder.chainConfig.ArbitrumChainParams.EnableEspresso = false
+	}
 
 	client, cleanup := builder.Build2ndNode(t, &SecondNodeParams{nodeConfig: nodeConfig})
 	return client, builder.L2Info, cleanup
@@ -145,7 +151,7 @@ func createValidationNode(ctx context.Context, t *testing.T, jit bool) func() {
 
 }
 
-func createL1ValidatorPosterNode(ctx context.Context, t *testing.T, hotshotUrl string) (*NodeBuilder, func()) {
+func createL1ValidatorPosterNode(ctx context.Context, t *testing.T, hotshotUrl string, is_hotshot bool) (*NodeBuilder, func()) {
 	builder := NewNodeBuilder(ctx).DefaultConfig(t, true)
 	builder.l1StackConfig.HTTPPort = 8545
 	builder.l1StackConfig.WSPort = 8546
@@ -172,7 +178,12 @@ func createL1ValidatorPosterNode(ctx context.Context, t *testing.T, hotshotUrl s
 	builder.nodeConfig.BlockValidator.Espresso = true
 	builder.nodeConfig.DelayedSequencer.Enable = false
 
-	cleanup := builder.Build(t)
+	if !is_hotshot {
+		builder.chainConfig.ArbitrumChainParams.EnableEspresso = false
+		builder.nodeConfig.BlockValidator.Espresso = false
+	}
+
+	cleanup := builder.Build(t, is_hotshot)
 
 	// Fund the commitment task
 	mnemonic := "indoor dish desk flag debris potato excuse depart ticket judge file exit"
@@ -321,7 +332,7 @@ func runNodes(ctx context.Context, t *testing.T) (*NodeBuilder, *TestClient, *Bl
 
 	cleanValNode := createValidationNode(ctx, t, false)
 
-	builder, cleanup := createL1ValidatorPosterNode(ctx, t, hotShotUrl)
+	builder, cleanup := createL1ValidatorPosterNode(ctx, t, hotShotUrl, true)
 
 	err := waitFor(t, ctx, func() bool {
 		if e := exec.Command(
@@ -353,7 +364,7 @@ func runNodes(ctx context.Context, t *testing.T) (*NodeBuilder, *TestClient, *Bl
 	})
 	Require(t, err)
 
-	l2Node, l2Info, cleanL2Node := createL2Node(ctx, t, hotShotUrl, builder)
+	l2Node, l2Info, cleanL2Node := createL2Node(ctx, t, hotShotUrl, builder, true)
 
 	return builder, l2Node, l2Info, func() {
 		cleanL2Node()

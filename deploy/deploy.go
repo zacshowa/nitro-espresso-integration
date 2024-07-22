@@ -234,14 +234,14 @@ func deployRollupCreator(ctx context.Context, l1Reader *headerreader.HeaderReade
 	return rollupCreator, rollupCreatorAddress, validatorUtils, validatorWalletCreator, nil
 }
 
-func DeployOnL1(ctx context.Context, parentChainReader *headerreader.HeaderReader, deployAuth *bind.TransactOpts, batchPosters []common.Address, batchPosterManager common.Address, authorizeValidators uint64, config rollupgen.Config, nativeToken common.Address, maxDataSize *big.Int, hotshot common.Address, isUsingFeeToken bool) (*chaininfo.RollupAddresses, error) {
+func DeployOnL1(ctx context.Context, parentChainReader *headerreader.HeaderReader, deployAuth *bind.TransactOpts, batchPosters []common.Address, batchPosterManager common.Address, authorizeValidators uint64, config rollupgen.Config, nativeToken common.Address, maxDataSize *big.Int, hotshot common.Address, isUsingFeeToken bool) (*chaininfo.RollupAddresses, common.Address, common.Address, error) {
 	if config.WasmModuleRoot == (common.Hash{}) {
-		return nil, errors.New("no machine specified")
+		return nil, *new(common.Address), *new(common.Address), errors.New("no machine specified")
 	}
 
 	rollupCreator, _, validatorUtils, validatorWalletCreator, err := deployRollupCreator(ctx, parentChainReader, deployAuth, maxDataSize, hotshot, isUsingFeeToken)
 	if err != nil {
-		return nil, fmt.Errorf("error deploying rollup creator: %w", err)
+		return nil, *new(common.Address), *new(common.Address), fmt.Errorf("error deploying rollup creator: %w", err)
 	}
 
 	var validatorAddrs []common.Address
@@ -265,26 +265,34 @@ func DeployOnL1(ctx context.Context, parentChainReader *headerreader.HeaderReade
 		deployParams,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("error submitting create rollup tx: %w", err)
+		return nil, *new(common.Address), *new(common.Address), fmt.Errorf("error submitting create rollup tx: %w", err)
 	}
 	receipt, err := parentChainReader.WaitForTxApproval(ctx, tx)
 	if err != nil {
-		return nil, fmt.Errorf("error executing create rollup tx: %w", err)
+		return nil, *new(common.Address), *new(common.Address), fmt.Errorf("error executing create rollup tx: %w", err)
 	}
 	info, err := rollupCreator.ParseRollupCreated(*receipt.Logs[len(receipt.Logs)-1])
 	if err != nil {
-		return nil, fmt.Errorf("error parsing rollup created log: %w", err)
+		return nil, *new(common.Address), *new(common.Address), fmt.Errorf("error parsing rollup created log: %w", err)
 	}
 
+	ospAddr, err := rollupCreator.Osp(&bind.CallOpts{
+		Pending: false,
+		Context: ctx,
+	})
+
 	return &chaininfo.RollupAddresses{
-		Bridge:                 info.Bridge,
-		Inbox:                  info.InboxAddress,
-		SequencerInbox:         info.SequencerInbox,
-		DeployedAt:             receipt.BlockNumber.Uint64(),
-		Rollup:                 info.RollupAddress,
-		NativeToken:            nativeToken,
-		UpgradeExecutor:        info.UpgradeExecutor,
-		ValidatorUtils:         validatorUtils,
-		ValidatorWalletCreator: validatorWalletCreator,
-	}, nil
+			Bridge:                 info.Bridge,
+			Inbox:                  info.InboxAddress,
+			SequencerInbox:         info.SequencerInbox,
+			DeployedAt:             receipt.BlockNumber.Uint64(),
+			Rollup:                 info.RollupAddress,
+			NativeToken:            nativeToken,
+			UpgradeExecutor:        info.UpgradeExecutor,
+			ValidatorUtils:         validatorUtils,
+			ValidatorWalletCreator: validatorWalletCreator,
+		},
+		ospAddr,
+		info.ChallengeManager,
+		nil
 }
