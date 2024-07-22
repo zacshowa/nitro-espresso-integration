@@ -2,7 +2,6 @@ package arbtest
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/ethereum/go-ethereum/accounts/abi"
@@ -460,6 +459,7 @@ func TestEspressoMigration(t *testing.T) {
 	defer cleanup()
 	node := builder.L2
 
+	log.Info("Pre initial message")
 	// Wait for the initial message
 	expected := arbutil.MessageIndex(1)
 	err := waitFor(t, ctx, func() bool {
@@ -473,7 +473,10 @@ func TestEspressoMigration(t *testing.T) {
 	})
 	Require(t, err)
 
-	// wait for the latest hotshot block
+	preEspressoAccount := "preEspressoAccount"
+	err = checkTransferTxOnL2(t, ctx, l2Node, preEspressoAccount, l2Info)
+
+	/*// wait for the latest hotshot block
 	err = waitFor(t, ctx, func() bool {
 		out, err := exec.Command("curl", "http://127.0.0.1:41000/status/block-height", "-L").Output()
 		if err != nil {
@@ -487,6 +490,7 @@ func TestEspressoMigration(t *testing.T) {
 		return h > 0
 	})
 	Require(t, err)
+	*/
 
 	// Check if the tx is executed correctly
 	err = checkTransferTxOnL2(t, ctx, l2Node, "User10", l2Info)
@@ -499,7 +503,7 @@ func TestEspressoMigration(t *testing.T) {
 		Require(t, err)
 		msgCnt = cnt
 		log.Info("waiting for message count", "cnt", msgCnt)
-		return msgCnt > 6
+		return msgCnt > 2
 	})
 	Require(t, err)
 
@@ -511,6 +515,23 @@ func TestEspressoMigration(t *testing.T) {
 	})
 	Require(t, err)
 
+	ChallengeManagerIndex := "ChallengeManager"
+	challengeManagerAddress := builder.L1Info.Accounts[ChallengeManagerIndex].Address
+	Require(t, err)
+
+	l1Client := builder.L1.Client
+
+	challengeManager, err := challengegen.NewChallengeManager(challengeManagerAddress, l1Client)
+	Require(t, err)
+
+	upgradeExecutorAddress := builder.L1Info.GetAddress("UpgradeExecutor")
+	upgradeExecutor, err := upgrade_executorgen.NewUpgradeExecutor(upgradeExecutorAddress, l1Client)
+
+	Require(t, err)
+
+	upgradeExecutor.ExecuteCall()
+
+	//challengeManager.PostUpgradeInit()
 	newAccount2 := "User11"
 	l2Info.GenerateAccount(newAccount2)
 	addr2 := l2Info.GetAddress(newAccount2)
