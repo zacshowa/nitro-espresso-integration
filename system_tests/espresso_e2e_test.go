@@ -74,7 +74,7 @@ func runEspresso(t *testing.T, ctx context.Context) func() {
 	return shutdown
 }
 
-func createL2Node(ctx context.Context, t *testing.T, hotshot_url string, builder *NodeBuilder, is_hotshot bool) (*TestClient, info, func()) {
+func createL2Node(ctx context.Context, t *testing.T, hotshot_url string, builder *NodeBuilder, is_hotshot bool) (*TestClient, info, *SecondNodeParams, func()) {
 	nodeConfig := arbnode.ConfigDefaultL1Test()
 	builder.takeOwnership = false
 	nodeConfig.BatchPoster.Enable = false
@@ -102,9 +102,9 @@ func createL2Node(ctx context.Context, t *testing.T, hotshot_url string, builder
 		builder.execConfig.Sequencer.Espresso = false
 		builder.chainConfig.ArbitrumChainParams.EnableEspresso = false
 	}
-
-	client, cleanup := builder.Build2ndNode(t, &SecondNodeParams{nodeConfig: nodeConfig})
-	return client, builder.L2Info, cleanup
+	secondNodeParams := &SecondNodeParams{nodeConfig: nodeConfig}
+	client, cleanup := builder.Build2ndNode(t, secondNodeParams)
+	return client, builder.L2Info, secondNodeParams, cleanup
 }
 
 func createValidationNode(ctx context.Context, t *testing.T, jit bool) func() {
@@ -364,7 +364,7 @@ func runNodes(ctx context.Context, t *testing.T) (*NodeBuilder, *TestClient, *Bl
 	})
 	Require(t, err)
 
-	l2Node, l2Info, cleanL2Node := createL2Node(ctx, t, hotShotUrl, builder, true)
+	l2Node, l2Info, _, cleanL2Node := createL2Node(ctx, t, hotShotUrl, builder, true)
 
 	return builder, l2Node, l2Info, func() {
 		cleanL2Node()
