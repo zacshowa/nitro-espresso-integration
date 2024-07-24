@@ -763,7 +763,8 @@ func DeployOnTestL1(
 	l1info.SetContract("SequencerInbox", addresses.SequencerInbox)
 	l1info.SetContract("Inbox", addresses.Inbox)
 	l1info.SetContract("UpgradeExecutor", addresses.UpgradeExecutor)
-	 //Include the addresses for the Osp and ChallengeManager in the l1info for use in the tests. l1info.SetContract("Osp", ospAddr)
+	 //Include the addresses for the Osp and ChallengeManager in the l1info for use in the tests.
+	l1info.SetContract("OspEntry", ospAddr)
 	l1info.SetContract("ChallengeManager", challengeManager)
 	initMessage := getInitMessage(ctx, t, l1client, addresses)
 	return addresses, initMessage
