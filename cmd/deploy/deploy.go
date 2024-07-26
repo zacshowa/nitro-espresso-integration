@@ -182,7 +182,7 @@ func main() {
 
 	nativeToken := common.HexToAddress(*nativeTokenAddressString)
 	hotshot := common.HexToAddress(*hotshotAddr)
-	deployedAddresses, err := deploycode.DeployOnL1(
+	deployedAddresses, _, _, err := deploycode.DeployOnL1(
 		ctx,
 		l1Reader,
 		l1TransactionOpts,

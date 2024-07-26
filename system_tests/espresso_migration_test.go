@@ -6,6 +6,7 @@ import (
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/offchainlabs/nitro/solgen/go/challengegen"
 	"github.com/offchainlabs/nitro/solgen/go/precompilesgen"
 	"github.com/offchainlabs/nitro/util/headerreader"
 	"github.com/offchainlabs/nitro/validator/server_common"
@@ -160,8 +161,11 @@ func TestEspressoMigration(t *testing.T) {
 	})
 	Require(t, err)
 
+	log.Info("Turn on espresso network after sequencing some default transactions.")
+
 	shutdown := runEspresso(t, ctx)
 	defer shutdown()
+	log.Info("prepare to turn on espresso sequencing by changing the builders configs.")
 	//Change various config flags to enable espresso behavior in the L2 node, these are all references so in theory we should be able to edit these mid-test to enable the espresso behavior.
 	builder.chainConfig.ArbitrumChainParams.EnableEspresso = true
 	secondNodeParams.nodeConfig.Espresso = true
@@ -180,7 +184,10 @@ func TestEspressoMigration(t *testing.T) {
 
 	// We have seen the non-espresso network sequence transactions, we need to shutdown the L2 node, and then start a new one with the new chain config or update it's chain config to use the espresso logic,
 	// TODO: Determine If we are shutting down the node and restarting a new one with a new chain config or paying to update the chain config on the running node such that the espresso code can be loaded onto the sequencer box ahead of time.
+	log.Info("Get challenge manager account")
 	ChallengeManagerIndex := "ChallengeManager"
+	chalAddr := builder.L1Info.Accounts[ChallengeManagerIndex]
+	log.Info("Accounts at ChallengeManagerIndex", "ChallengeManagerAddress entry", chalAddr)
 	challengeManagerAddress := builder.L1Info.GetAddress(ChallengeManagerIndex)
 
 	UpgradeExecutorIndex := "UpgradeExecutor"
@@ -194,13 +201,17 @@ func TestEspressoMigration(t *testing.T) {
 	Require(t, err)
 
 	upgradeTransactionOpts := builder.L1Info.GetDefaultTransactOpts("RollupOwner", ctx)
+	log.Info("UpgradeOpts", "Opts:", upgradeTransactionOpts)
+	callDataAbi, err := abi.JSON(strings.NewReader(challengegen.ChallengeManagerMetaData.ABI))
 
-	callDataAbi, err := abi.JSON(strings.NewReader(espressoOspGen.OneStepProverHostIoMetaData.ABI))
-
-	callData, err := callDataAbi.Pack("PostUpgradeInit", newOspEntry, wasmModuleRoot, OldOspEntryAddress)
+	callData, err := callDataAbi.Pack("postUpgradeInit", newOspEntry, wasmModuleRoot, OldOspEntryAddress)
 	Require(t, err)
 
-	_, err = upgradeExecutor.ExecuteCall(&upgradeTransactionOpts, challengeManagerAddress, callData)
+	transaction, err := upgradeExecutor.ExecuteCall(&upgradeTransactionOpts, challengeManagerAddress, callData)
+	log.Error("Error in execute call", "error", err)
+	log.Info("CallData", "callData", callData)
+	log.Info("ExecuteCall transaction:", "transaction", transaction)
+	_, err = EnsureTxSucceeded(ctx, l1Client, transaction)
 	Require(t, err)
 
 	log.Info("Successfully upgraded the challenge manager to point to the new OSP entry.") //TODO: I left off here and I need to determine if the network is successfully exhibiting new behavior

@@ -183,7 +183,7 @@ func createL1ValidatorPosterNode(ctx context.Context, t *testing.T, hotshotUrl s
 		builder.nodeConfig.BlockValidator.Espresso = false
 	}
 
-	cleanup := builder.Build(t, is_hotshot)
+	cleanup := builder.Build(t)
 
 	// Fund the commitment task
 	mnemonic := "indoor dish desk flag debris potato excuse depart ticket judge file exit"

@@ -211,7 +211,7 @@ func (b *NodeBuilder) WithWasmRootDir(wasmRootDir string) *NodeBuilder {
 	return b
 }
 
-func (b *NodeBuilder) Build(t *testing.T, is_hotshot bool) func() {
+func (b *NodeBuilder) Build(t *testing.T) func() {
 	if b.execConfig.RPC.MaxRecreateStateDepth == arbitrum.UninitializedMaxRecreateStateDepth {
 		if b.execConfig.Caching.Archive {
 			b.execConfig.RPC.MaxRecreateStateDepth = arbitrum.DefaultArchiveNodeMaxRecreateStateDepth
@@ -222,7 +222,7 @@ func (b *NodeBuilder) Build(t *testing.T, is_hotshot bool) func() {
 	if b.withL1 {
 		l1, l2 := NewTestClient(b.ctx), NewTestClient(b.ctx)
 		b.L2Info, l2.ConsensusNode, l2.Client, l2.Stack, b.L1Info, l1.L1Backend, l1.Client, l1.Stack =
-			createTestNodeOnL1WithConfigImpl(t, b.ctx, b.isSequencer, b.nodeConfig, b.execConfig, b.chainConfig, b.l1StackConfig, b.l2StackConfig, b.valnodeConfig, b.L2Info, is_hotshot)
+			createTestNodeOnL1WithConfigImpl(t, b.ctx, b.isSequencer, b.nodeConfig, b.execConfig, b.chainConfig, b.l1StackConfig, b.l2StackConfig, b.valnodeConfig, b.L2Info)
 		b.L1, b.L2 = l1, l2
 		b.L1.cleanup = func() { requireClose(t, b.L1.Stack) }
 	} else {
@@ -718,9 +718,7 @@ func getInitMessage(ctx context.Context, t *testing.T, l1client client, addresse
 	return initMessage
 }
 
-func DeployOnTestL1(
-	t *testing.T, ctx context.Context, l1info info, l1client client, chainConfig *params.ChainConfig, wasmModuleRoot common.Hash, hotshotAddr common.Address, is_hotshot bool,
-) (*chaininfo.RollupAddresses, *arbostypes.ParsedInitMessage) {
+func DeployOnTestL1(t *testing.T, ctx context.Context, l1info info, l1client client, chainConfig *params.ChainConfig, wasmModuleRoot common.Hash, hotshotAddr common.Address) (*chaininfo.RollupAddresses, *arbostypes.ParsedInitMessage) {
 	l1info.GenerateAccount("RollupOwner")
 	l1info.GenerateAccount("Sequencer")
 	l1info.GenerateAccount("Validator")
@@ -763,10 +761,9 @@ func DeployOnTestL1(
 	l1info.SetContract("SequencerInbox", addresses.SequencerInbox)
 	l1info.SetContract("Inbox", addresses.Inbox)
 	l1info.SetContract("UpgradeExecutor", addresses.UpgradeExecutor)
-	if is_hotshot { //Include the addresses for the Osp and ChallengeManager in the l1info for use in the tests.
-		l1info.SetContract("OspEntry", ospAddr)
-		l1info.SetContract("ChallengeManager", challengeManager)
-	}
+	//Include the addresses for the Osp and ChallengeManager in the l1info for use in the tests.
+	l1info.SetContract("OspEntry", ospAddr)
+	l1info.SetContract("ChallengeManager", challengeManager)
 	initMessage := getInitMessage(ctx, t, l1client, addresses)
 	return addresses, initMessage
 
@@ -826,22 +823,7 @@ func ClientForStack(t *testing.T, backend *node.Node) *ethclient.Client {
 	return ethclient.NewClient(rpcClient)
 }
 
-func createTestNodeOnL1WithConfigImpl(
-	t *testing.T,
-	ctx context.Context,
-	isSequencer bool,
-	nodeConfig *arbnode.Config,
-	execConfig *gethexec.Config,
-	chainConfig *params.ChainConfig,
-	l1StackConfig *node.Config,
-	stackConfig *node.Config,
-	valnodeConfig *valnode.Config,
-	l2info_in info,
-	is_hotshot bool,
-) (
-	l2info info, currentNode *arbnode.Node, l2client *ethclient.Client, l2stack *node.Node,
-	l1info info, l1backend *eth.Ethereum, l1client *ethclient.Client, l1stack *node.Node,
-) {
+func createTestNodeOnL1WithConfigImpl(t *testing.T, ctx context.Context, isSequencer bool, nodeConfig *arbnode.Config, execConfig *gethexec.Config, chainConfig *params.ChainConfig, l1StackConfig *node.Config, stackConfig *node.Config, valnodeConfig *valnode.Config, l2info_in info) (l2info info, currentNode *arbnode.Node, l2client *ethclient.Client, l2stack *node.Node, l1info info, l1backend *eth.Ethereum, l1client *ethclient.Client, l1stack *node.Node) {
 	if nodeConfig == nil {
 		nodeConfig = arbnode.ConfigDefaultL1Test()
 	}
@@ -866,7 +848,7 @@ func createTestNodeOnL1WithConfigImpl(
 	}
 	locator, err := server_common.NewMachineLocator(valnodeConfig.Wasm.RootPath)
 	Require(t, err)
-	addresses, initMessage := DeployOnTestL1(t, ctx, l1info, l1client, chainConfig, locator.LatestWasmModuleRoot(), lightClientAddr, is_hotshot)
+	addresses, initMessage := DeployOnTestL1(t, ctx, l1info, l1client, chainConfig, locator.LatestWasmModuleRoot(), lightClientAddr)
 	_, l2stack, l2chainDb, l2arbDb, l2blockchain = createL2BlockChainWithStackConfig(t, l2info, "", chainConfig, initMessage, stackConfig, &execConfig.Caching)
 	var sequencerTxOptsPtr *bind.TransactOpts
 	var dataSigner signature.DataSignerFunc
