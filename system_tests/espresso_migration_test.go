@@ -72,7 +72,7 @@ func andTxSucceeded(ctx context.Context, l1Reader *headerreader.HeaderReader, tx
 	return nil
 }
 
-func DeployNewOspToL1(t *testing.T, ctx context.Context, l1client client, hotshot common.Address, auth *bind.TransactOpts) (common.Address, error) {
+func DeployNewOspToL1(t *testing.T, ctx context.Context, l1client client, hotshot common.Address, auth *bind.TransactOpts) (common.Address, common.Address, error) {
 	arbSys, _ := precompilesgen.NewArbSys(types.ArbSysAddress, l1client)
 	l1Reader, err := headerreader.New(ctx, l1client, func() *headerreader.Config { return &headerreader.TestConfig }, arbSys)
 	Require(t, err)
@@ -84,34 +84,68 @@ func DeployNewOspToL1(t *testing.T, ctx context.Context, l1client client, hotsho
 	osp0, tx, _, err := espressoOspGen.DeployOneStepProver0(auth, client)
 	err = andTxSucceeded(ctx, l1Reader, tx, err)
 	if err != nil {
-		return common.Address{}, fmt.Errorf("osp0 deploy error: %w", err)
+		return common.Address{}, common.Address{}, fmt.Errorf("osp0 deploy error: %w", err)
 	}
 
 	ospMem, tx, _, err := espressoOspGen.DeployOneStepProverMemory(auth, client)
 	err = andTxSucceeded(ctx, l1Reader, tx, err)
 	if err != nil {
-		return common.Address{}, fmt.Errorf("ospMemory deploy error: %w", err)
+		return common.Address{}, common.Address{}, fmt.Errorf("ospMemory deploy error: %w", err)
 	}
 
 	ospMath, tx, _, err := espressoOspGen.DeployOneStepProverMath(auth, client)
 	err = andTxSucceeded(ctx, l1Reader, tx, err)
 	if err != nil {
-		return common.Address{}, fmt.Errorf("ospMath deploy error: %w", err)
+		return common.Address{}, common.Address{}, fmt.Errorf("ospMath deploy error: %w", err)
 	}
 
 	ospHostIo, tx, _, err := espressoOspGen.DeployOneStepProverHostIo(auth, client, hotshot)
 	err = andTxSucceeded(ctx, l1Reader, tx, err)
 	if err != nil {
-		return common.Address{}, fmt.Errorf("ospHostIo deploy error: %w", err)
+		return common.Address{}, common.Address{}, fmt.Errorf("ospHostIo deploy error: %w", err)
+	}
+
+	challengeManagerAddr, tx, _, err := challengegen.DeployChallengeManager(auth, client)
+	err = andTxSucceeded(ctx, l1Reader, tx, err)
+	if err != nil {
+		return common.Address{}, common.Address{}, fmt.Errorf("challenge manager deploy error: %w", err)
 	}
 
 	ospEntryAddr, tx, _, err := espressoOspGen.DeployOneStepProofEntry(auth, client, osp0, ospMem, ospMath, ospHostIo)
 	err = andTxSucceeded(ctx, l1Reader, tx, err)
 	if err != nil {
-		return common.Address{}, fmt.Errorf("ospEntry deploy error: %w", err)
+		return common.Address{}, common.Address{}, fmt.Errorf("ospEntry deploy error: %w", err)
 	}
 
-	return ospEntryAddr, nil
+	return ospEntryAddr, challengeManagerAddr, nil
+}
+
+// Name: errorIfAddressesEqual
+// Desc: test utility function that will throw an error if 2 addresses are equal, useful for checking contract upgrades have succeeded.
+func errorIfAddressesEqual(addr1 common.Address, addr2 common.Address) error {
+	if addr1 == addr2 {
+		return fmt.Errorf("address %s and address %s are the same", addr1, addr2)
+	}
+	return nil
+}
+
+// Name: errorIfAddressesUnequal
+// Desc: test utility function that will throw an error if 2 addresses are unequal, useful for checking contract upgrades have succeeded.
+func errorIfAddressesUnequal(addr1 common.Address, addr2 common.Address) error {
+	if addr1 != addr2 {
+		return fmt.Errorf("address %s and address %s are not the same", addr1, addr2)
+	}
+	return nil
+}
+
+func printAccounts(builder *NodeBuilder) {
+	account_names := [...]string{"Bridge", "ChallengeManager", "CommitmentTask", "Faucet", "Inbox", "OspEntry", "RollupOwner", "Sequencer", "SequencerInbox", "UpgradeExecutor", "User", "Validator", "Staker1", "Staker2", "Staker3"}
+
+	for _, account_name := range account_names {
+		account_info := builder.L1Info.GetAddress(account_name)
+		//acounts := [...]*AccountInfo{account_info}
+		log.Info("Parsing accounts", "account_name", account_name, "account_info", account_info)
+	}
 }
 
 func TestEspressoMigration(t *testing.T) {
@@ -123,19 +157,6 @@ func TestEspressoMigration(t *testing.T) {
 	node := builder.L2
 	l1Client := builder.L1.Client
 
-	/*log.Info("L1 accounts", "accounts", builder.L1Info.Accounts)
-
-	account_names := [...]string{"Bridge", "ChallengeManager", "CommitmentTask", "Faucet", "Inbox", "OspEntry", "RollupOwner", "Sequencer", "SequencerInbox", "UpgradeExecutor", "User", "Validator", "Staker1", "Staker2", "Staker3"}
-
-	for _, account_name := range account_names {
-		account_info := builder.L1Info.GetAccountInfoByName(account_name)
-		//acounts := [...]*AccountInfo{account_info}
-		log.Info("Parsing accounts", "account_name", account_name, "account_info", account_info)
-	}
-
-	log.Info("init_accounts", "array", builder.L1Info.ArbInitData.Accounts)
-	*/
-	log.Info("Pre initial message")
 	// Wait for the initial message
 	expected := arbutil.MessageIndex(1)
 	err := waitFor(t, ctx, func() bool {
@@ -193,13 +214,16 @@ func TestEspressoMigration(t *testing.T) {
 
 	//deploy the new OSP contracts to the L1 and record their addresses/
 	auth := builder.L1Info.GetDefaultTransactOpts("RollupOwner", ctx)
-	newOspEntry, err := DeployNewOspToL1(t, ctx, builder.L1.Client, common.HexToAddress(builder.nodeConfig.BlockValidator.LightClientAddress), &auth)
+	newOspEntry, newChallengeManagerAddr, err := DeployNewOspToL1(t, ctx, builder.L1.Client, common.HexToAddress(builder.nodeConfig.BlockValidator.LightClientAddress), &auth)
 	//construct light client addr.
 	Require(t, err)
 
 	log.Info("Get challenge manager account")
 	ChallengeManagerIndex := "ChallengeManager"
 	challengeManagerAddress := builder.L1Info.GetAddress(ChallengeManagerIndex)
+
+	challengeManager, err := challengegen.NewChallengeManager(challengeManagerAddress, l1Client)
+	Require(t, err)
 
 	UpgradeExecutorIndex := "UpgradeExecutor"
 	upgradeExecutorAddress := builder.L1Info.GetAddress(UpgradeExecutorIndex)
@@ -214,6 +238,7 @@ func TestEspressoMigration(t *testing.T) {
 	callData, err := callDataAbi.Pack("postUpgradeInit", newOspEntry, wasmModuleRoot, OldOspEntryAddress)
 	Require(t, err)
 
+	log.Info("callData", "data", callData)
 	//	proxyAdminAddrStr := "0x9DE2c8DEd268d1ae6Db7d0a2fC2460e104616062"
 
 	//	proxyAdminAddr := common.HexToAddress(proxyAdminAddrStr)
@@ -225,41 +250,38 @@ func TestEspressoMigration(t *testing.T) {
 	if proxyAdminAddr == (common.Address{}) {
 		Fatal(t, "failed to get challenge manager proxy admin")
 	}
-
+	log.Info("ProxyAdmin", "addr", proxyAdminAddr)
 	proxyAdminAbi, err := abi.JSON(strings.NewReader(mocksgen.ProxyAdminForBindingMetaData.ABI))
 	Require(t, err)
 
-	//	proxyAdmin, err := mocksgen.NewProxyAdminForBinding(proxyAdminAddr, l1Client)
-	//	Require(t, err)
+	//proxyAdmin, err := mocksgen.NewProxyAdminForBinding(proxyAdminAddr, l1Client)
+	Require(t, err)
 
-	// This code works to get the proxy admin's address, I was also testing the method above this comment as that's
-	// how Offchain Labs seems to be grabbing the address for the proxy admin in the staker test, but it doesn't seem to change
-	// the behavior in this test.
-
-	//	_, err = proxyAdmin.UpgradeAndCall(&auth, challenge, challengeManagerAddress, callData)
-	//	Require(t, err)
-
-	//proxyAdminCallData, err := proxyAdminAbi.Pack("upgradeToAndCall", proxyAdminAddr, challengeManagerAddress, callData) //this call fails with "UpgradeExecutor: inner call failed without reason.
-	// The errdata for the above call is errdata=0x08c379a000000000000000000000000000000000000000000000000000000000000000200000000000000000000000000000000000000000000000000000000000000031557067726164654578656375746f723a20696e6e65722063616c6c206661696c656420776974686f757420726561736f6e000000000000000000000000000000
-	//the beginning of the errdata == keccak256("Error(string)")
-
-	//	proxyAdminCallData, err := proxyAdminAbi.Pack("upgradeToAndCall", challengeManagerAddress, challengeManagerAddress, callData)
-	// 	Require(t, err)
-
-	//The below call fails with "TransparentUpgradeableProxy: admin cannot fallback to proxy
-	//using an upgrade executor to call the proxy admin's upgradeAndCall function is how the orbit-governance repo seems to upgrade the challenge manager and osp.
-	//
-	proxyAdminCallData, err := proxyAdminAbi.Pack("upgradeAndCall", challengeManagerAddress, challengeManagerAddress, callData)
+	proxyAdminCallData, err := proxyAdminAbi.Pack("upgradeAndCall", challengeManagerAddress, newChallengeManagerAddr, callData) // change 2nd chall addr to actual impl addr
 	Require(t, err)
 
 	upgradeExecutor, err := upgrade_executorgen.NewUpgradeExecutor(upgradeExecutorAddress, l1Client)
 
 	Require(t, err)
 
-	_, err = upgradeExecutor.ExecuteCall(&auth, proxyAdminAddr, proxyAdminCallData)
+	tx, err := upgradeExecutor.ExecuteCall(&auth, proxyAdminAddr, proxyAdminCallData)
 	Require(t, err)
 
-	log.Info("Successfully upgraded the challenge manager to point to the new OSP entry.") //TODO: I left off here and I need to determine if the network is successfully exhibiting new behavior
+	receipt, err := builder.L1.EnsureTxSucceeded(tx)
+	Require(t, err)
+	log.Info("receipt", "receipt", receipt)
+
+	callOpts := builder.L1Info.GetDefaultCallOpts("RollupOwner", ctx)
+	updatedOspAddr, err := challengeManager.Osp(callOpts)
+	Require(t, err)
+
+	err = errorIfAddressesEqual(updatedOspAddr, OldOspEntryAddress)
+	Require(t, err)
+	log.Info("updatedOspAddr", "updatedOspAddr", updatedOspAddr, "OldOspEntryAddress", OldOspEntryAddress, "newOspEntry", newOspEntry)
+	err = errorIfAddressesUnequal(updatedOspAddr, newOspEntry)
+	Require(t, err) // TODO: Left off here, Next is to use the proxy admin to get the challenge managers implementation address and attempt a "no-op" upgrade
+
+	log.Info("Successfully upgraded the challenge manager to point to the new OSP entry.")
 
 	newAccount2 := "User11"
 	l2Info.GenerateAccount(newAccount2)
