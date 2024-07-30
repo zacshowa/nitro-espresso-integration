@@ -6,8 +6,11 @@ import (
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/offchainlabs/nitro/solgen/go/challengegen"
+	"github.com/offchainlabs/nitro/solgen/go/mocksgen"
 	"github.com/offchainlabs/nitro/solgen/go/precompilesgen"
+	"github.com/offchainlabs/nitro/util/arbmath"
 	"github.com/offchainlabs/nitro/util/headerreader"
 	"github.com/offchainlabs/nitro/validator/server_common"
 
@@ -120,7 +123,18 @@ func TestEspressoMigration(t *testing.T) {
 	node := builder.L2
 	l1Client := builder.L1.Client
 
-	builder.chainConfig.ArbitrumChainParams.EnableEspresso = true
+	/*log.Info("L1 accounts", "accounts", builder.L1Info.Accounts)
+
+	account_names := [...]string{"Bridge", "ChallengeManager", "CommitmentTask", "Faucet", "Inbox", "OspEntry", "RollupOwner", "Sequencer", "SequencerInbox", "UpgradeExecutor", "User", "Validator", "Staker1", "Staker2", "Staker3"}
+
+	for _, account_name := range account_names {
+		account_info := builder.L1Info.GetAccountInfoByName(account_name)
+		//acounts := [...]*AccountInfo{account_info}
+		log.Info("Parsing accounts", "account_name", account_name, "account_info", account_info)
+	}
+
+	log.Info("init_accounts", "array", builder.L1Info.ArbInitData.Accounts)
+	*/
 	log.Info("Pre initial message")
 	// Wait for the initial message
 	expected := arbutil.MessageIndex(1)
@@ -137,7 +151,7 @@ func TestEspressoMigration(t *testing.T) {
 
 	preEspressoAccount := "preEspressoAccount"
 	err = checkTransferTxOnL2(t, ctx, l2Node, preEspressoAccount, l2Info)
-
+	Require(t, err)
 	// Check if the tx is executed correctly
 	err = checkTransferTxOnL2(t, ctx, l2Node, "User10", l2Info)
 	Require(t, err)
@@ -181,13 +195,10 @@ func TestEspressoMigration(t *testing.T) {
 	auth := builder.L1Info.GetDefaultTransactOpts("RollupOwner", ctx)
 	newOspEntry, err := DeployNewOspToL1(t, ctx, builder.L1.Client, common.HexToAddress(builder.nodeConfig.BlockValidator.LightClientAddress), &auth)
 	//construct light client addr.
+	Require(t, err)
 
-	// We have seen the non-espresso network sequence transactions, we need to shutdown the L2 node, and then start a new one with the new chain config or update it's chain config to use the espresso logic,
-	// TODO: Determine If we are shutting down the node and restarting a new one with a new chain config or paying to update the chain config on the running node such that the espresso code can be loaded onto the sequencer box ahead of time.
 	log.Info("Get challenge manager account")
 	ChallengeManagerIndex := "ChallengeManager"
-	chalAddr := builder.L1Info.Accounts[ChallengeManagerIndex]
-	log.Info("Accounts at ChallengeManagerIndex", "ChallengeManagerAddress entry", chalAddr)
 	challengeManagerAddress := builder.L1Info.GetAddress(ChallengeManagerIndex)
 
 	UpgradeExecutorIndex := "UpgradeExecutor"
@@ -196,27 +207,60 @@ func TestEspressoMigration(t *testing.T) {
 	OldOspEntryIndex := "OspEntry"
 	OldOspEntryAddress := builder.L1Info.GetAddress(OldOspEntryIndex)
 
+	log.Info("UpgradeOpts", "Opts:", auth)
+	callDataAbi, err := abi.JSON(strings.NewReader(challengegen.ChallengeManagerMetaData.ABI))
+	Require(t, err)
+	log.Info("Call Data:", "newOspEntry", newOspEntry, "wasmModuleRoot", wasmModuleRoot, "OldOspEntry", OldOspEntryAddress)
+	callData, err := callDataAbi.Pack("postUpgradeInit", newOspEntry, wasmModuleRoot, OldOspEntryAddress)
+	Require(t, err)
+
+	//	proxyAdminAddrStr := "0x9DE2c8DEd268d1ae6Db7d0a2fC2460e104616062"
+
+	//	proxyAdminAddr := common.HexToAddress(proxyAdminAddrStr)
+
+	proxyAdminSlot := common.BigToHash(arbmath.BigSub(crypto.Keccak256Hash([]byte("eip1967.proxy.admin")).Big(), common.Big1))
+	proxyAdminBytes, err := builder.L1.Client.StorageAt(ctx, challengeManagerAddress, proxyAdminSlot, nil)
+	Require(t, err)
+	proxyAdminAddr := common.BytesToAddress(proxyAdminBytes)
+	if proxyAdminAddr == (common.Address{}) {
+		Fatal(t, "failed to get challenge manager proxy admin")
+	}
+
+	proxyAdminAbi, err := abi.JSON(strings.NewReader(mocksgen.ProxyAdminForBindingMetaData.ABI))
+	Require(t, err)
+
+	//	proxyAdmin, err := mocksgen.NewProxyAdminForBinding(proxyAdminAddr, l1Client)
+	//	Require(t, err)
+
+	// This code works to get the proxy admin's address, I was also testing the method above this comment as that's
+	// how Offchain Labs seems to be grabbing the address for the proxy admin in the staker test, but it doesn't seem to change
+	// the behavior in this test.
+
+	//	_, err = proxyAdmin.UpgradeAndCall(&auth, challenge, challengeManagerAddress, callData)
+	//	Require(t, err)
+
+	//proxyAdminCallData, err := proxyAdminAbi.Pack("upgradeToAndCall", proxyAdminAddr, challengeManagerAddress, callData) //this call fails with "UpgradeExecutor: inner call failed without reason.
+	// The errdata for the above call is errdata=0x08c379a000000000000000000000000000000000000000000000000000000000000000200000000000000000000000000000000000000000000000000000000000000031557067726164654578656375746f723a20696e6e65722063616c6c206661696c656420776974686f757420726561736f6e000000000000000000000000000000
+	//the beginning of the errdata == keccak256("Error(string)")
+
+	//	proxyAdminCallData, err := proxyAdminAbi.Pack("upgradeToAndCall", challengeManagerAddress, challengeManagerAddress, callData)
+	// 	Require(t, err)
+
+	//The below call fails with "TransparentUpgradeableProxy: admin cannot fallback to proxy
+	//using an upgrade executor to call the proxy admin's upgradeAndCall function is how the orbit-governance repo seems to upgrade the challenge manager and osp.
+	//
+	proxyAdminCallData, err := proxyAdminAbi.Pack("upgradeAndCall", challengeManagerAddress, challengeManagerAddress, callData)
+	Require(t, err)
+
 	upgradeExecutor, err := upgrade_executorgen.NewUpgradeExecutor(upgradeExecutorAddress, l1Client)
 
 	Require(t, err)
 
-	upgradeTransactionOpts := builder.L1Info.GetDefaultTransactOpts("RollupOwner", ctx)
-	log.Info("UpgradeOpts", "Opts:", upgradeTransactionOpts)
-	callDataAbi, err := abi.JSON(strings.NewReader(challengegen.ChallengeManagerMetaData.ABI))
-
-	callData, err := callDataAbi.Pack("postUpgradeInit", newOspEntry, wasmModuleRoot, OldOspEntryAddress)
-	Require(t, err)
-
-	transaction, err := upgradeExecutor.ExecuteCall(&upgradeTransactionOpts, challengeManagerAddress, callData)
-	log.Error("Error in execute call", "error", err)
-	log.Info("CallData", "callData", callData)
-	log.Info("ExecuteCall transaction:", "transaction", transaction)
-	_, err = EnsureTxSucceeded(ctx, l1Client, transaction)
+	_, err = upgradeExecutor.ExecuteCall(&auth, proxyAdminAddr, proxyAdminCallData)
 	Require(t, err)
 
 	log.Info("Successfully upgraded the challenge manager to point to the new OSP entry.") //TODO: I left off here and I need to determine if the network is successfully exhibiting new behavior
 
-	//challengeManager.PostUpgradeInit()
 	newAccount2 := "User11"
 	l2Info.GenerateAccount(newAccount2)
 	addr2 := l2Info.GetAddress(newAccount2)
