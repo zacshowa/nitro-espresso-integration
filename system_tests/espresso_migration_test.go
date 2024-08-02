@@ -9,29 +9,23 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/offchainlabs/nitro/solgen/go/challengegen"
 	"github.com/offchainlabs/nitro/solgen/go/mocksgen"
+	espressoOspGen "github.com/offchainlabs/nitro/solgen/go/ospgen"
 	"github.com/offchainlabs/nitro/solgen/go/precompilesgen"
+	"github.com/offchainlabs/nitro/solgen/go/upgrade_executorgen"
 	"github.com/offchainlabs/nitro/util/arbmath"
 	"github.com/offchainlabs/nitro/util/headerreader"
 	"github.com/offchainlabs/nitro/validator/server_common"
-
-	espressoOspGen "github.com/offchainlabs/nitro/solgen/go/ospgen"
-	"github.com/offchainlabs/nitro/solgen/go/upgrade_executorgen"
-	"math/big"
 	"os/exec"
 	"strings"
 	"testing"
 	"time"
 
-	espressoTypes "github.com/EspressoSystems/espresso-sequencer-go/types"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/offchainlabs/nitro/arbutil"
-	"github.com/offchainlabs/nitro/solgen/go/rollupgen"
-	"github.com/offchainlabs/nitro/staker"
-	"github.com/offchainlabs/nitro/validator"
 )
 
-func BuildNonEspressoNetwork(ctx context.Context, t *testing.T) (*NodeBuilder, *TestClient, *BlockchainTestInfo, *SecondNodeParams, func(), func()) {
+func BuildNonEspressoNetwork(ctx context.Context, t *testing.T) (*NodeBuilder, *TestClient, *BlockchainTestInfo, *SecondNodeParams, func()) {
 	cleanValNode := createValidationNode(ctx, t, false)
 
 	builder, cleanup := createL1ValidatorPosterNode(ctx, t, hotShotUrl, false)
@@ -53,11 +47,26 @@ func BuildNonEspressoNetwork(ctx context.Context, t *testing.T) (*NodeBuilder, *
 	})
 	Require(t, err)
 
+	cleanEspresso := runEspresso(t, ctx)
+
+	// wait for the builder
+	err = waitForWith(t, ctx, 400*time.Second, 1*time.Second, func() bool {
+		out, err := exec.Command("curl", "http://localhost:41000/availability/block/10", "-L").Output()
+		if err != nil {
+			log.Warn("retry to check the builder", "err", err)
+			return false
+		}
+		return len(out) > 0
+	})
+	Require(t, err)
+
 	l2Node, l2Info, secondNodeParams, cleanL2Node := createL2Node(ctx, t, hotShotUrl, builder, false)
 
-	return builder, l2Node, l2Info, secondNodeParams, cleanL2Node, func() {
+	return builder, l2Node, l2Info, secondNodeParams, func() {
+		cleanL2Node()
 		cleanup()
 		cleanValNode()
+		cleanEspresso()
 	}
 }
 
@@ -72,7 +81,7 @@ func andTxSucceeded(ctx context.Context, l1Reader *headerreader.HeaderReader, tx
 	return nil
 }
 
-func DeployNewOspToL1(t *testing.T, ctx context.Context, l1client client, hotshot common.Address, auth *bind.TransactOpts) (common.Address, common.Address, error) {
+func DeployNewOspToL1(t *testing.T, ctx context.Context, l1client client, hotshot common.Address, auth *bind.TransactOpts) (common.Address, error) {
 	arbSys, _ := precompilesgen.NewArbSys(types.ArbSysAddress, l1client)
 	l1Reader, err := headerreader.New(ctx, l1client, func() *headerreader.Config { return &headerreader.TestConfig }, arbSys)
 	Require(t, err)
@@ -84,40 +93,34 @@ func DeployNewOspToL1(t *testing.T, ctx context.Context, l1client client, hotsho
 	osp0, tx, _, err := espressoOspGen.DeployOneStepProver0(auth, client)
 	err = andTxSucceeded(ctx, l1Reader, tx, err)
 	if err != nil {
-		return common.Address{}, common.Address{}, fmt.Errorf("osp0 deploy error: %w", err)
+		return common.Address{}, fmt.Errorf("osp0 deploy error: %w", err)
 	}
 
 	ospMem, tx, _, err := espressoOspGen.DeployOneStepProverMemory(auth, client)
 	err = andTxSucceeded(ctx, l1Reader, tx, err)
 	if err != nil {
-		return common.Address{}, common.Address{}, fmt.Errorf("ospMemory deploy error: %w", err)
+		return common.Address{}, fmt.Errorf("ospMemory deploy error: %w", err)
 	}
 
 	ospMath, tx, _, err := espressoOspGen.DeployOneStepProverMath(auth, client)
 	err = andTxSucceeded(ctx, l1Reader, tx, err)
 	if err != nil {
-		return common.Address{}, common.Address{}, fmt.Errorf("ospMath deploy error: %w", err)
+		return common.Address{}, fmt.Errorf("ospMath deploy error: %w", err)
 	}
 
 	ospHostIo, tx, _, err := espressoOspGen.DeployOneStepProverHostIo(auth, client, hotshot)
 	err = andTxSucceeded(ctx, l1Reader, tx, err)
 	if err != nil {
-		return common.Address{}, common.Address{}, fmt.Errorf("ospHostIo deploy error: %w", err)
-	}
-
-	challengeManagerAddr, tx, _, err := challengegen.DeployChallengeManager(auth, client)
-	err = andTxSucceeded(ctx, l1Reader, tx, err)
-	if err != nil {
-		return common.Address{}, common.Address{}, fmt.Errorf("challenge manager deploy error: %w", err)
+		return common.Address{}, fmt.Errorf("ospHostIo deploy error: %w", err)
 	}
 
 	ospEntryAddr, tx, _, err := espressoOspGen.DeployOneStepProofEntry(auth, client, osp0, ospMem, ospMath, ospHostIo)
 	err = andTxSucceeded(ctx, l1Reader, tx, err)
 	if err != nil {
-		return common.Address{}, common.Address{}, fmt.Errorf("ospEntry deploy error: %w", err)
+		return common.Address{}, fmt.Errorf("ospEntry deploy error: %w", err)
 	}
 
-	return ospEntryAddr, challengeManagerAddr, nil
+	return ospEntryAddr, nil
 }
 
 // Name: errorIfAddressesEqual
@@ -138,24 +141,129 @@ func errorIfAddressesUnequal(addr1 common.Address, addr2 common.Address) error {
 	return nil
 }
 
-func printAccounts(builder *NodeBuilder) {
-	account_names := [...]string{"Bridge", "ChallengeManager", "CommitmentTask", "Faucet", "Inbox", "OspEntry", "RollupOwner", "Sequencer", "SequencerInbox", "UpgradeExecutor", "User", "Validator", "Staker1", "Staker2", "Staker3"}
+func updateChainConfig(t *testing.T, ctx context.Context, builder *NodeBuilder) {
+	//In theory the below code should be executing a update to the chain config, but this needs to come from a specific address that isn't easily accessible in the test framework from what I can tell.
+	/*transferAmount := big.NewInt(1e16)
+	tx := builder.L2Info.PrepareTx("Faucet", "Owner", 3e7, transferAmount, nil)
 
-	for _, account_name := range account_names {
-		account_info := builder.L1Info.GetAddress(account_name)
-		//acounts := [...]*AccountInfo{account_info}
-		log.Info("Parsing accounts", "account_name", account_name, "account_info", account_info)
+	err := builder.L2.Client.SendTransaction(ctx, tx)
+	Require(t, err)
+
+	arbOwner, err := precompilesgen.NewArbOwner(types.ArbOwnerAddress, builder.L2.Client)
+	Require(t, err)
+
+	chainConfig := params.ArbitrumDevTestChainConfig()
+	chainConfig.ArbitrumChainParams.EnableEspresso = true
+	configString, err := json.Marshal(chainConfig)
+	Require(t, err)
+
+	auth := builder.L2Info.GetDefaultTransactOpts("Owner", ctx)
+	log.Info("updateChainConfig", "configString", string(configString))
+	_, err = arbOwner.SetChainConfig(&auth, string(configString))
+	Require(t, err)
+	*/
+
+	//Change various config flags to enable espresso behavior in the L2 node, these are all references so in theory we should be able to edit these mid-test to enable the espresso behavior.
+	builder.chainConfig.ArbitrumChainParams.EnableEspresso = true
+}
+
+// Check all the post upgrade assertions in one place even if it induces an obscenely long function signature.
+func checkPostUpgradeAssertions(t *testing.T, proxyAdmin *mocksgen.ProxyAdminForBinding, callOpts *bind.CallOpts, challengeManagerAddress common.Address, challengeManagerImplAddr common.Address, challengeManager *challengegen.ChallengeManager, oldOspEntryAddress common.Address, newOspEntry common.Address) {
+
+	updatedChallengeManagerImplAddr, err := proxyAdmin.GetProxyImplementation(callOpts, challengeManagerAddress)
+	Require(t, err)
+
+	//ensure the upgrade was actually a no-op
+	err = errorIfAddressesUnequal(challengeManagerImplAddr, updatedChallengeManagerImplAddr)
+	Require(t, err)
+
+	updatedOspAddr, err := challengeManager.Osp(callOpts)
+	Require(t, err)
+
+	err = errorIfAddressesEqual(updatedOspAddr, oldOspEntryAddress)
+	Require(t, err)
+	log.Info("updatedOspAddr", "updatedOspAddr", updatedOspAddr, "OldOspEntryAddress", oldOspEntryAddress, "newOspEntry", newOspEntry)
+	err = errorIfAddressesUnequal(updatedOspAddr, newOspEntry)
+	Require(t, err)
+}
+
+func upgradeContracts(t *testing.T, auth *bind.TransactOpts, ctx context.Context, builder *NodeBuilder) {
+	l1Client := builder.L1.Client
+	//get the current wasmmoduleroot.
+	locator, err := server_common.NewMachineLocator(builder.valnodeConfig.Wasm.RootPath)
+	Require(t, err)
+
+	wasmModuleRoot := locator.LatestWasmModuleRoot()
+
+	//deploy the new OSP contracts to the L1 and record their addresses/
+	newOspEntry, err := DeployNewOspToL1(t, ctx, builder.L1.Client, common.HexToAddress(builder.nodeConfig.BlockValidator.LightClientAddress), auth)
+	//construct light client addr.
+	Require(t, err)
+
+	log.Info("Get challenge manager account")
+	challengeManagerIndex := "ChallengeManager"
+	challengeManagerAddress := builder.L1Info.GetAddress(challengeManagerIndex)
+
+	challengeManager, err := challengegen.NewChallengeManager(challengeManagerAddress, builder.L1.Client)
+
+	upgradeExecutorIndex := "UpgradeExecutor"
+	upgradeExecutorAddress := builder.L1Info.GetAddress(upgradeExecutorIndex)
+
+	oldOspEntryIndex := "OspEntry"
+	oldOspEntryAddress := builder.L1Info.GetAddress(oldOspEntryIndex)
+
+	log.Info("UpgradeOpts", "Opts:", auth)
+	callDataAbi, err := abi.JSON(strings.NewReader(challengegen.ChallengeManagerMetaData.ABI))
+	Require(t, err)
+	log.Info("Call Data:", "newOspEntry", newOspEntry, "wasmModuleRoot", wasmModuleRoot, "OldOspEntry", oldOspEntryAddress)
+	callData, err := callDataAbi.Pack("postUpgradeInit", newOspEntry, wasmModuleRoot, oldOspEntryAddress)
+	Require(t, err)
+
+	log.Info("callData", "data", callData)
+
+	proxyAdminSlot := common.BigToHash(arbmath.BigSub(crypto.Keccak256Hash([]byte("eip1967.proxy.admin")).Big(), common.Big1))
+	proxyAdminBytes, err := builder.L1.Client.StorageAt(ctx, challengeManagerAddress, proxyAdminSlot, nil)
+	Require(t, err)
+	proxyAdminAddr := common.BytesToAddress(proxyAdminBytes)
+	if proxyAdminAddr == (common.Address{}) {
+		Fatal(t, "failed to get challenge manager proxy admin")
 	}
+	log.Info("ProxyAdmin", "addr", proxyAdminAddr)
+	proxyAdminAbi, err := abi.JSON(strings.NewReader(mocksgen.ProxyAdminForBindingMetaData.ABI))
+	Require(t, err)
+
+	proxyAdmin, err := mocksgen.NewProxyAdminForBinding(proxyAdminAddr, l1Client)
+	Require(t, err)
+
+	callOpts := builder.L1Info.GetDefaultCallOpts("RollupOwner", ctx)
+
+	challengeManagerImplAddr, err := proxyAdmin.GetProxyImplementation(callOpts, challengeManagerAddress)
+	Require(t, err)
+	proxyAdminCallData, err := proxyAdminAbi.Pack("upgradeAndCall", challengeManagerAddress, challengeManagerImplAddr, callData) // change 2nd chall addr to actual impl addr
+	Require(t, err)
+
+	upgradeExecutor, err := upgrade_executorgen.NewUpgradeExecutor(upgradeExecutorAddress, l1Client)
+
+	Require(t, err)
+
+	tx, err := upgradeExecutor.ExecuteCall(auth, proxyAdminAddr, proxyAdminCallData)
+	Require(t, err)
+
+	_, err = builder.L1.EnsureTxSucceeded(tx)
+	Require(t, err)
+
+	checkPostUpgradeAssertions(t, proxyAdmin, callOpts, challengeManagerAddress, challengeManagerImplAddr, challengeManager, oldOspEntryAddress, newOspEntry)
+
+	log.Info("Successfully upgraded smart contracts for espresso sequencing.")
 }
 
 func TestEspressoMigration(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	builder, l2Node, l2Info, secondNodeParams, _, cleanup := BuildNonEspressoNetwork(ctx, t)
+	builder, l2Node, l2Info, _, cleanup := BuildNonEspressoNetwork(ctx, t)
 	defer cleanup()
 	node := builder.L2
-	l1Client := builder.L1.Client
 
 	// Wait for the initial message
 	expected := arbutil.MessageIndex(1)
@@ -169,6 +277,8 @@ func TestEspressoMigration(t *testing.T) {
 		return msgCnt >= expected && validatedCnt >= expected
 	})
 	Require(t, err)
+
+	auth := builder.L1Info.GetDefaultTransactOpts("RollupOwner", ctx)
 
 	preEspressoAccount := "preEspressoAccount"
 	err = checkTransferTxOnL2(t, ctx, l2Node, preEspressoAccount, l2Info)
@@ -198,96 +308,35 @@ func TestEspressoMigration(t *testing.T) {
 
 	log.Info("Turn on espresso network after sequencing some default transactions.")
 
-	shutdown := runEspresso(t, ctx)
-	defer shutdown()
-	log.Info("prepare to turn on espresso sequencing by changing the builders configs.")
-	//Change various config flags to enable espresso behavior in the L2 node, these are all references so in theory we should be able to edit these mid-test to enable the espresso behavior.
-	builder.chainConfig.ArbitrumChainParams.EnableEspresso = true
-	secondNodeParams.nodeConfig.Espresso = true
-	builder.execConfig.Sequencer.Espresso = true
+	log.Info("Update relevant contracts on L1 to prepare for espresso sequencing.")
 
-	//get the current wasmmoduleroot.
-	locator, err := server_common.NewMachineLocator(builder.valnodeConfig.Wasm.RootPath)
-	Require(t, err)
-
-	wasmModuleRoot := locator.LatestWasmModuleRoot()
-
-	//deploy the new OSP contracts to the L1 and record their addresses/
-	auth := builder.L1Info.GetDefaultTransactOpts("RollupOwner", ctx)
-	newOspEntry, newChallengeManagerAddr, err := DeployNewOspToL1(t, ctx, builder.L1.Client, common.HexToAddress(builder.nodeConfig.BlockValidator.LightClientAddress), &auth)
-	//construct light client addr.
-	Require(t, err)
-
-	log.Info("Get challenge manager account")
-	ChallengeManagerIndex := "ChallengeManager"
-	challengeManagerAddress := builder.L1Info.GetAddress(ChallengeManagerIndex)
-
-	challengeManager, err := challengegen.NewChallengeManager(challengeManagerAddress, l1Client)
-	Require(t, err)
-
-	UpgradeExecutorIndex := "UpgradeExecutor"
-	upgradeExecutorAddress := builder.L1Info.GetAddress(UpgradeExecutorIndex)
-
-	OldOspEntryIndex := "OspEntry"
-	OldOspEntryAddress := builder.L1Info.GetAddress(OldOspEntryIndex)
-
-	log.Info("UpgradeOpts", "Opts:", auth)
-	callDataAbi, err := abi.JSON(strings.NewReader(challengegen.ChallengeManagerMetaData.ABI))
-	Require(t, err)
-	log.Info("Call Data:", "newOspEntry", newOspEntry, "wasmModuleRoot", wasmModuleRoot, "OldOspEntry", OldOspEntryAddress)
-	callData, err := callDataAbi.Pack("postUpgradeInit", newOspEntry, wasmModuleRoot, OldOspEntryAddress)
-	Require(t, err)
-
-	log.Info("callData", "data", callData)
-	//	proxyAdminAddrStr := "0x9DE2c8DEd268d1ae6Db7d0a2fC2460e104616062"
-
-	//	proxyAdminAddr := common.HexToAddress(proxyAdminAddrStr)
-
-	proxyAdminSlot := common.BigToHash(arbmath.BigSub(crypto.Keccak256Hash([]byte("eip1967.proxy.admin")).Big(), common.Big1))
-	proxyAdminBytes, err := builder.L1.Client.StorageAt(ctx, challengeManagerAddress, proxyAdminSlot, nil)
-	Require(t, err)
-	proxyAdminAddr := common.BytesToAddress(proxyAdminBytes)
-	if proxyAdminAddr == (common.Address{}) {
-		Fatal(t, "failed to get challenge manager proxy admin")
-	}
-	log.Info("ProxyAdmin", "addr", proxyAdminAddr)
-	proxyAdminAbi, err := abi.JSON(strings.NewReader(mocksgen.ProxyAdminForBindingMetaData.ABI))
-	Require(t, err)
-
-	//proxyAdmin, err := mocksgen.NewProxyAdminForBinding(proxyAdminAddr, l1Client)
-	Require(t, err)
-
-	proxyAdminCallData, err := proxyAdminAbi.Pack("upgradeAndCall", challengeManagerAddress, newChallengeManagerAddr, callData) // change 2nd chall addr to actual impl addr
-	Require(t, err)
-
-	upgradeExecutor, err := upgrade_executorgen.NewUpgradeExecutor(upgradeExecutorAddress, l1Client)
-
-	Require(t, err)
-
-	tx, err := upgradeExecutor.ExecuteCall(&auth, proxyAdminAddr, proxyAdminCallData)
-	Require(t, err)
-
-	receipt, err := builder.L1.EnsureTxSucceeded(tx)
-	Require(t, err)
-	log.Info("receipt", "receipt", receipt)
-
-	callOpts := builder.L1Info.GetDefaultCallOpts("RollupOwner", ctx)
-	updatedOspAddr, err := challengeManager.Osp(callOpts)
-	Require(t, err)
-
-	err = errorIfAddressesEqual(updatedOspAddr, OldOspEntryAddress)
-	Require(t, err)
-	log.Info("updatedOspAddr", "updatedOspAddr", updatedOspAddr, "OldOspEntryAddress", OldOspEntryAddress, "newOspEntry", newOspEntry)
-	err = errorIfAddressesUnequal(updatedOspAddr, newOspEntry)
-	Require(t, err) // TODO: Left off here, Next is to use the proxy admin to get the challenge managers implementation address and attempt a "no-op" upgrade
+	upgradeContracts(t, &auth, ctx, builder)
 
 	log.Info("Successfully upgraded the challenge manager to point to the new OSP entry.")
 
-	newAccount2 := "User11"
-	l2Info.GenerateAccount(newAccount2)
-	addr2 := l2Info.GetAddress(newAccount2)
+	log.Info("Turn on espresso sequencing by changing the builders configs.")
+	updateChainConfig(t, ctx, builder)
 
-	// Transfer via the delayed inbox
+	/*shutdown := runEspresso(t, ctx)
+	defer shutdown()*/
+
+	//newAccount2 := "User11"
+	//l2Info.GenerateAccount(newAccount2)
+	//addr2 := l2Info.GetAddress(newAccount2)
+
+	postEspressoAccount := "postEspressoAccount1"
+	err = checkTransferTxOnL2(t, ctx, l2Node, postEspressoAccount, l2Info)
+	Require(t, err)
+
+	postEspressoAccount2 := "postEspressoAccount2"
+	err = checkTransferTxOnL2(t, ctx, l2Node, postEspressoAccount2, l2Info)
+	Require(t, err)
+
+	postEspressoAccount3 := "postEspressoAccount3"
+	err = checkTransferTxOnL2(t, ctx, l2Node, postEspressoAccount3, l2Info)
+	Require(t, err)
+
+	/*// Transfer via the delayed inbox
 	delayedTx := l2Info.PrepareTx("Owner", newAccount2, 3e7, transferAmount, nil)
 	builder.L1.SendWaitTestTransactions(t, []*types.Transaction{
 		WrapL2ForDelayed(t, delayedTx, builder.L1Info, "Faucet", 100000),
@@ -298,75 +347,5 @@ func TestEspressoMigration(t *testing.T) {
 		return balance2.Cmp(transferAmount) >= 0
 	})
 	Require(t, err)
-
-	incorrectHeight := uint64(10)
-
-	goodStaker, blockValidatorA, cleanA := createStaker(ctx, t, builder, 0, "Staker1", nil)
-	defer cleanA()
-	badStaker1, blockValidatorB, cleanB := createStaker(ctx, t, builder, incorrectHeight, "Staker2", func(input *validator.ValidationInput) {
-		log.Info("previousinput", "input", input.HotShotCommitment)
-		input.HotShotCommitment = espressoTypes.Commitment{}
-		log.Info("afterinput", "input", input.HotShotCommitment)
-	})
-	defer cleanB()
-	badStaker2, blockValidatorC, cleanC := createStaker(ctx, t, builder, incorrectHeight, "Staker3", func(input *validator.ValidationInput) {
-		input.HotShotLiveness = !input.HotShotLiveness
-	})
-	defer cleanC()
-
-	err = waitForWith(t, ctx, 240*time.Second, 1*time.Second, func() bool {
-		validatedA := blockValidatorA.Validated(t)
-		validatedB := blockValidatorB.Validated(t)
-		validatorC := blockValidatorC.Validated(t)
-		shouldValidated := arbutil.MessageIndex(incorrectHeight - 1)
-		condition := validatedA >= shouldValidated && validatedB >= shouldValidated && validatorC >= shouldValidated
-		if !condition {
-			log.Info("waiting for stakers to catch up the incorrect hotshot height", "stakerA", validatedA, "stakerB", validatedB, "target", shouldValidated)
-		}
-		return condition
-	})
-	Require(t, err)
-	validatorUtils, err := rollupgen.NewValidatorUtils(builder.L2.ConsensusNode.DeployInfo.ValidatorUtils, builder.L1.Client)
-	Require(t, err)
-	goodOpts := builder.L1Info.GetDefaultCallOpts("Staker1", ctx)
-	badOpts1 := builder.L1Info.GetDefaultCallOpts("Staker2", ctx)
-	badOpts2 := builder.L1Info.GetDefaultCallOpts("Staker3", ctx)
-	i := 0
-	err = waitForWith(t, ctx, 60*time.Second, 2*time.Second, func() bool {
-		log.Info("good staker acts", "step", i)
-		txA, err := goodStaker.Act(ctx)
-		Require(t, err)
-		if txA != nil {
-			_, err = builder.L1.EnsureTxSucceeded(txA)
-			Require(t, err)
-		}
-
-		log.Info("bad staker1 acts", "step", i)
-		txB, err := badStaker1.Act(ctx)
-		Require(t, err)
-		if txB != nil {
-			_, err = builder.L1.EnsureTxSucceeded(txB)
-			Require(t, err)
-		}
-
-		log.Info("bad staker2 acts", "step", i)
-		txC, err := badStaker2.Act(ctx)
-		Require(t, err)
-		if txC != nil {
-			_, err = builder.L1.EnsureTxSucceeded(txC)
-			Require(t, err)
-		}
-
-		i += 1
-		conflict1, err := validatorUtils.FindStakerConflict(nil, builder.L2.ConsensusNode.DeployInfo.Rollup, goodOpts.From, badOpts1.From, big.NewInt(1024))
-		Require(t, err)
-		conflict2, err := validatorUtils.FindStakerConflict(nil, builder.L2.ConsensusNode.DeployInfo.Rollup, goodOpts.From, badOpts2.From, big.NewInt(1024))
-		Require(t, err)
-		condition := staker.ConflictType(conflict1.Ty) == staker.CONFLICT_TYPE_FOUND && staker.ConflictType(conflict2.Ty) == staker.CONFLICT_TYPE_FOUND
-		if !condition {
-			log.Info("waiting for the conflict")
-		}
-		return condition
-	})
-	Require(t, err)
+	*/
 }

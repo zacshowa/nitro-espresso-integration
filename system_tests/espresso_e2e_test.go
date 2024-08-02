@@ -98,8 +98,6 @@ func createL2Node(ctx context.Context, t *testing.T, hotshot_url string, builder
 	nodeConfig.Feed.Output.Port = fmt.Sprintf("%d", broadcastPort)
 
 	if !is_hotshot {
-		nodeConfig.Espresso = false
-		builder.execConfig.Sequencer.Espresso = false
 		builder.chainConfig.ArbitrumChainParams.EnableEspresso = false
 	}
 	secondNodeParams := &SecondNodeParams{nodeConfig: nodeConfig}
@@ -180,7 +178,6 @@ func createL1ValidatorPosterNode(ctx context.Context, t *testing.T, hotshotUrl s
 
 	if !is_hotshot {
 		builder.chainConfig.ArbitrumChainParams.EnableEspresso = false
-		builder.nodeConfig.BlockValidator.Espresso = false
 	}
 
 	cleanup := builder.Build(t)
