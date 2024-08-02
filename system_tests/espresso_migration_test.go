@@ -25,7 +25,7 @@ import (
 	"github.com/offchainlabs/nitro/arbutil"
 )
 
-func BuildNonEspressoNetwork(ctx context.Context, t *testing.T) (*NodeBuilder, *TestClient, *BlockchainTestInfo, *SecondNodeParams, func(), func()) {
+func BuildNonEspressoNetwork(ctx context.Context, t *testing.T) (*NodeBuilder, *TestClient, *BlockchainTestInfo, *SecondNodeParams, func()) {
 	cleanValNode := createValidationNode(ctx, t, false)
 
 	builder, cleanup := createL1ValidatorPosterNode(ctx, t, hotShotUrl, false)
@@ -66,7 +66,8 @@ func BuildNonEspressoNetwork(ctx context.Context, t *testing.T) (*NodeBuilder, *
 		log.Info("L2 Accounts", "Account pneumonic", k, "Entry", v, "Address", v.Address)
 	}
 
-	return builder, l2Node, l2Info, secondNodeParams, cleanL2Node, func() {
+	return builder, l2Node, l2Info, secondNodeParams, func() {
+		cleanL2Node()
 		cleanup()
 		cleanValNode()
 		cleanEspresso()
