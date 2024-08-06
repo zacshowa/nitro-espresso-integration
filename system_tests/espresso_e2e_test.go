@@ -98,6 +98,7 @@ func createL2Node(ctx context.Context, t *testing.T, hotshot_url string, builder
 	nodeConfig.Feed.Output.Port = fmt.Sprintf("%d", broadcastPort)
 
 	if !is_hotshot {
+		builder.execConfig.Sequencer.Espresso = false
 		builder.chainConfig.ArbitrumChainParams.EnableEspresso = false
 	}
 	secondNodeParams := &SecondNodeParams{nodeConfig: nodeConfig}

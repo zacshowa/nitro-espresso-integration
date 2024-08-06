@@ -25,7 +25,7 @@ import (
 	"github.com/offchainlabs/nitro/arbutil"
 )
 
-func BuildNonEspressoNetwork(ctx context.Context, t *testing.T) (*NodeBuilder, *TestClient, *BlockchainTestInfo, *SecondNodeParams, func()) {
+func BuildNonEspressoNetwork(ctx context.Context, t *testing.T) (*NodeBuilder, *TestClient, *BlockchainTestInfo, *SecondNodeParams, func(), func()) {
 	cleanValNode := createValidationNode(ctx, t, false)
 
 	builder, cleanup := createL1ValidatorPosterNode(ctx, t, hotShotUrl, false)
@@ -62,8 +62,7 @@ func BuildNonEspressoNetwork(ctx context.Context, t *testing.T) (*NodeBuilder, *
 
 	l2Node, l2Info, secondNodeParams, cleanL2Node := createL2Node(ctx, t, hotShotUrl, builder, false)
 
-	return builder, l2Node, l2Info, secondNodeParams, func() {
-		cleanL2Node()
+	return builder, l2Node, l2Info, secondNodeParams, cleanL2Node, func() {
 		cleanup()
 		cleanValNode()
 		cleanEspresso()
@@ -139,32 +138,6 @@ func errorIfAddressesUnequal(addr1 common.Address, addr2 common.Address) error {
 		return fmt.Errorf("address %s and address %s are not the same", addr1, addr2)
 	}
 	return nil
-}
-
-func updateChainConfig(t *testing.T, ctx context.Context, builder *NodeBuilder) {
-	//In theory the below code should be executing a update to the chain config, but this needs to come from a specific address that isn't easily accessible in the test framework from what I can tell.
-	/*transferAmount := big.NewInt(1e16)
-	tx := builder.L2Info.PrepareTx("Faucet", "Owner", 3e7, transferAmount, nil)
-
-	err := builder.L2.Client.SendTransaction(ctx, tx)
-	Require(t, err)
-
-	arbOwner, err := precompilesgen.NewArbOwner(types.ArbOwnerAddress, builder.L2.Client)
-	Require(t, err)
-
-	chainConfig := params.ArbitrumDevTestChainConfig()
-	chainConfig.ArbitrumChainParams.EnableEspresso = true
-	configString, err := json.Marshal(chainConfig)
-	Require(t, err)
-
-	auth := builder.L2Info.GetDefaultTransactOpts("Owner", ctx)
-	log.Info("updateChainConfig", "configString", string(configString))
-	_, err = arbOwner.SetChainConfig(&auth, string(configString))
-	Require(t, err)
-	*/
-
-	//Change various config flags to enable espresso behavior in the L2 node, these are all references so in theory we should be able to edit these mid-test to enable the espresso behavior.
-	builder.chainConfig.ArbitrumChainParams.EnableEspresso = true
 }
 
 // Check all the post upgrade assertions in one place even if it induces an obscenely long function signature.
@@ -261,7 +234,7 @@ func TestEspressoMigration(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	builder, l2Node, l2Info, _, cleanup := BuildNonEspressoNetwork(ctx, t)
+	builder, l2Node, l2Info, _, cleanL2Node, cleanup := BuildNonEspressoNetwork(ctx, t)
 	defer cleanup()
 	node := builder.L2
 
@@ -314,15 +287,14 @@ func TestEspressoMigration(t *testing.T) {
 
 	log.Info("Successfully upgraded the challenge manager to point to the new OSP entry.")
 
-	log.Info("Turn on espresso sequencing by changing the builders configs.")
-	updateChainConfig(t, ctx, builder)
+	log.Info("Turn off non--espresso sequencing by stopping previous sequencer")
 
-	/*shutdown := runEspresso(t, ctx)
-	defer shutdown()*/
+	cleanL2Node()
 
-	//newAccount2 := "User11"
-	//l2Info.GenerateAccount(newAccount2)
-	//addr2 := l2Info.GetAddress(newAccount2)
+	// create L2 node in espresso mode here
+
+	l2Node, l2Info, _, cleanL2Node = createL2Node(ctx, t, hotShotUrl, builder, true)
+	defer cleanL2Node()
 
 	postEspressoAccount := "postEspressoAccount1"
 	err = checkTransferTxOnL2(t, ctx, l2Node, postEspressoAccount, l2Info)
@@ -336,16 +308,21 @@ func TestEspressoMigration(t *testing.T) {
 	err = checkTransferTxOnL2(t, ctx, l2Node, postEspressoAccount3, l2Info)
 	Require(t, err)
 
-	/*// Transfer via the delayed inbox
-	delayedTx := l2Info.PrepareTx("Owner", newAccount2, 3e7, transferAmount, nil)
-	builder.L1.SendWaitTestTransactions(t, []*types.Transaction{
-		WrapL2ForDelayed(t, delayedTx, builder.L1Info, "Faucet", 100000),
-	})
-	err = waitForWith(t, ctx, 180*time.Second, 2*time.Second, func() bool {
-		balance2 := l2Node.GetBalance(t, addr2)
-		log.Info("waiting for balance", "account", newAccount2, "addr", addr2, "balance", balance2)
-		return balance2.Cmp(transferAmount) >= 0
+	// Remember the number of messages
+	err = waitFor(t, ctx, func() bool {
+		cnt, err := node.ConsensusNode.TxStreamer.GetMessageCount()
+		Require(t, err)
+		msgCnt = cnt
+		log.Info("waiting for message count", "cnt", msgCnt)
+		return msgCnt > 5
 	})
 	Require(t, err)
-	*/
+
+	// Wait for the number of validated messages to catch up
+	err = waitForWith(t, ctx, 360*time.Second, 5*time.Second, func() bool {
+		validatedCnt := node.ConsensusNode.BlockValidator.Validated(t)
+		log.Info("waiting for validation", "validatedCnt", validatedCnt, "msgCnt", msgCnt)
+		return validatedCnt >= msgCnt
+	})
+
 }
