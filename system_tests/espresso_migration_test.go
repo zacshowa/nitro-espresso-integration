@@ -308,6 +308,8 @@ func TestEspressoMigration(t *testing.T) {
 	err = checkTransferTxOnL2(t, ctx, l2Node, postEspressoAccount3, l2Info)
 	Require(t, err)
 
+	//TODO: the above transfers seem to execute successfully, but the validation count doesn't appear to increase, and various ammounts of validation error messages seem to be appearing during the test.
+
 	// Remember the number of messages
 	err = waitFor(t, ctx, func() bool {
 		cnt, err := node.ConsensusNode.TxStreamer.GetMessageCount()
