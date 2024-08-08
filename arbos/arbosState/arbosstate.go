@@ -74,8 +74,8 @@ func OpenArbosState(stateDB vm.StateDB, burner burn.Burner) (*ArbosState, error)
 	}
 	return &ArbosState{
 		arbosVersion,
-		31,
-		31,
+		35,
+		35,
 		backingStorage.OpenStorageBackedUint64(uint64(upgradeVersionOffset)),
 		backingStorage.OpenStorageBackedUint64(uint64(upgradeTimestampOffset)),
 		backingStorage.OpenStorageBackedAddress(uint64(networkFeeAccountOffset)),
@@ -323,7 +323,12 @@ func (state *ArbosState) UpgradeArbosVersion(
 			ensure(err)
 			ensure(params.UpgradeToVersion(2))
 			ensure(params.Save())
-
+		case 32, 33, 34:
+			// leave these versions open to orbit chains that may have performed custom upgrades post Bianca upgrading to espresso.
+		case 35:
+			//perform espresso upgrade here. No state changes are needed.
+		case 36, 37, 38, 39:
+			// leave these versions open to orbit chains that want to have custom upgrades after an espresso integration.
 		default:
 			return fmt.Errorf(
 				"the chain is upgrading to unsupported ArbOS version %v, %w",
