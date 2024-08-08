@@ -14,7 +14,7 @@ import (
 	"github.com/offchainlabs/nitro/solgen/go/upgrade_executorgen"
 	"github.com/offchainlabs/nitro/util/arbmath"
 	"github.com/offchainlabs/nitro/util/headerreader"
-	"github.com/offchainlabs/nitro/validator/server_common"
+	"math/big"
 	"os/exec"
 	"strings"
 	"testing"
@@ -61,6 +61,10 @@ func BuildNonEspressoNetwork(ctx context.Context, t *testing.T) (*NodeBuilder, *
 	Require(t, err)
 
 	l2Node, l2Info, secondNodeParams, cleanL2Node := createL2Node(ctx, t, hotShotUrl, builder, false)
+
+	for k, v := range builder.L1Info.Accounts {
+		log.Info("L2 Accounts", "Account pneumonic", k, "Entry", v, "Address", v.Address)
+	}
 
 	return builder, l2Node, l2Info, secondNodeParams, cleanL2Node, func() {
 		cleanup()
@@ -160,16 +164,41 @@ func checkPostUpgradeAssertions(t *testing.T, proxyAdmin *mocksgen.ProxyAdminFor
 	Require(t, err)
 }
 
-func upgradeContracts(t *testing.T, auth *bind.TransactOpts, ctx context.Context, builder *NodeBuilder) {
+func transferTxOnL2(
+	t *testing.T,
+	ctx context.Context,
+	l2Node *TestClient,
+	account string,
+	l2Info *BlockchainTestInfo,
+) error {
+	transferAmount := big.NewInt(1e16)
+	tx := l2Info.PrepareTx("Faucet", account, 3e7, transferAmount, nil)
+
+	err := l2Node.Client.SendTransaction(ctx, tx)
+	if err != nil {
+		return err
+	}
+
+	addr := l2Info.GetAddress(account)
+
+	return waitForWith(t, ctx, time.Second*300, time.Second*1, func() bool {
+		balance := l2Node.GetBalance(t, addr)
+		log.Info("waiting for balance", "account", account, "addr", addr, "balance", balance)
+		return balance.Cmp(big.NewInt(100000)) >= 0
+	})
+}
+
+func upgradeContracts(t *testing.T, l1Auth *bind.TransactOpts, l2Auth *bind.TransactOpts, ctx context.Context, builder *NodeBuilder) {
 	l1Client := builder.L1.Client
 	//get the current wasmmoduleroot.
-	locator, err := server_common.NewMachineLocator(builder.valnodeConfig.Wasm.RootPath)
-	Require(t, err)
+	//locator, err := server_common.NewMachineLocator(builder.valnodeConfig.Wasm.RootPath)
+	//Require(t, err)
 
-	wasmModuleRoot := locator.LatestWasmModuleRoot()
+	// wasmModuleRoot := locator.LatestWasmModuleRoot()
+	wasmModuleRoot := common.HexToHash("newWasmModuleRoot")
 
 	//deploy the new OSP contracts to the L1 and record their addresses/
-	newOspEntry, err := DeployNewOspToL1(t, ctx, builder.L1.Client, common.HexToAddress(builder.nodeConfig.BlockValidator.LightClientAddress), auth)
+	newOspEntry, err := DeployNewOspToL1(t, ctx, builder.L1.Client, common.HexToAddress(builder.nodeConfig.BlockValidator.LightClientAddress), l1Auth)
 	//construct light client addr.
 	Require(t, err)
 
@@ -185,14 +214,14 @@ func upgradeContracts(t *testing.T, auth *bind.TransactOpts, ctx context.Context
 	oldOspEntryIndex := "OspEntry"
 	oldOspEntryAddress := builder.L1Info.GetAddress(oldOspEntryIndex)
 
-	log.Info("UpgradeOpts", "Opts:", auth)
+	log.Info("UpgradeOpts", "Opts:", l1Auth)
 	callDataAbi, err := abi.JSON(strings.NewReader(challengegen.ChallengeManagerMetaData.ABI))
 	Require(t, err)
 	log.Info("Call Data:", "newOspEntry", newOspEntry, "wasmModuleRoot", wasmModuleRoot, "OldOspEntry", oldOspEntryAddress)
 	callData, err := callDataAbi.Pack("postUpgradeInit", newOspEntry, wasmModuleRoot, oldOspEntryAddress)
 	Require(t, err)
 
-	log.Info("callData", "data", callData)
+	//rollupAdmin = rollupgen.new
 
 	proxyAdminSlot := common.BigToHash(arbmath.BigSub(crypto.Keccak256Hash([]byte("eip1967.proxy.admin")).Big(), common.Big1))
 	proxyAdminBytes, err := builder.L1.Client.StorageAt(ctx, challengeManagerAddress, proxyAdminSlot, nil)
@@ -219,15 +248,35 @@ func upgradeContracts(t *testing.T, auth *bind.TransactOpts, ctx context.Context
 
 	Require(t, err)
 
-	tx, err := upgradeExecutor.ExecuteCall(auth, proxyAdminAddr, proxyAdminCallData)
+	tx, err := upgradeExecutor.ExecuteCall(l1Auth, proxyAdminAddr, proxyAdminCallData)
 	Require(t, err)
 
 	_, err = builder.L1.EnsureTxSucceeded(tx)
+
 	Require(t, err)
 
 	checkPostUpgradeAssertions(t, proxyAdmin, callOpts, challengeManagerAddress, challengeManagerImplAddr, challengeManager, oldOspEntryAddress, newOspEntry)
 
 	log.Info("Successfully upgraded smart contracts for espresso sequencing.")
+}
+
+func scheduleArbOSUpgrade(t *testing.T, auth *bind.TransactOpts, builder *NodeBuilder) {
+
+	arbOwner, err := precompilesgen.NewArbOwner(common.HexToAddress("0x070"), builder.L2.Client)
+	Require(t, err)
+
+	test, err := precompilesgen.NewArbDebug(common.HexToAddress("0xff"), builder.L2.Client)
+	Require(t, err)
+
+	tx, err := test.BecomeChainOwner(auth)
+	Require(t, err)
+	_, err = builder.L2.EnsureTxSucceeded(tx)
+	Require(t, err)
+
+	tx, err = arbOwner.ScheduleArbOSUpgrade(auth, 35, 0) // schedule the upgrade at timestamp 0 to upgrade instantly.
+	Require(t, err)
+	_, err = builder.L2.EnsureTxSucceeded(tx)
+	Require(t, err)
 }
 
 func TestEspressoMigration(t *testing.T) {
@@ -252,6 +301,7 @@ func TestEspressoMigration(t *testing.T) {
 	Require(t, err)
 
 	auth := builder.L1Info.GetDefaultTransactOpts("RollupOwner", ctx)
+	l2auth := builder.L2Info.GetDefaultTransactOpts("Owner", ctx)
 
 	preEspressoAccount := "preEspressoAccount"
 	err = checkTransferTxOnL2(t, ctx, l2Node, preEspressoAccount, l2Info)
@@ -283,40 +333,18 @@ func TestEspressoMigration(t *testing.T) {
 
 	log.Info("Update relevant contracts on L1 to prepare for espresso sequencing.")
 
-	upgradeContracts(t, &auth, ctx, builder)
+	upgradeContracts(t, &auth, &l2auth, ctx, builder)
 
 	log.Info("Successfully upgraded the challenge manager to point to the new OSP entry.")
 
 	log.Info("Turn off non--espresso sequencing by stopping previous sequencer")
 
-	cleanL2Node()
-
-	// create L2 node in espresso mode here
-
-	l2Node, l2Info, _, cleanL2Node = createL2Node(ctx, t, hotShotUrl, builder, true)
-	defer cleanL2Node()
-
-	postEspressoAccount := "postEspressoAccount1"
-	err = checkTransferTxOnL2(t, ctx, l2Node, postEspressoAccount, l2Info)
-	Require(t, err)
-
-	postEspressoAccount2 := "postEspressoAccount2"
-	err = checkTransferTxOnL2(t, ctx, l2Node, postEspressoAccount2, l2Info)
-	Require(t, err)
-
-	postEspressoAccount3 := "postEspressoAccount3"
-	err = checkTransferTxOnL2(t, ctx, l2Node, postEspressoAccount3, l2Info)
-	Require(t, err)
-
-	//TODO: the above transfers seem to execute successfully, but the validation count doesn't appear to increase, and various ammounts of validation error messages seem to be appearing during the test.
-
-	// Remember the number of messages
 	err = waitFor(t, ctx, func() bool {
 		cnt, err := node.ConsensusNode.TxStreamer.GetMessageCount()
 		Require(t, err)
 		msgCnt = cnt
 		log.Info("waiting for message count", "cnt", msgCnt)
-		return msgCnt > 5
+		return msgCnt > 2
 	})
 	Require(t, err)
 
@@ -326,5 +354,53 @@ func TestEspressoMigration(t *testing.T) {
 		log.Info("waiting for validation", "validatedCnt", validatedCnt, "msgCnt", msgCnt)
 		return validatedCnt >= msgCnt
 	})
+	Require(t, err)
+	//maybe wait here for contract upgrades?
+	cleanL2Node()
 
+	//	cleanL2Node()
+
+	// create L2 node in espresso mode here
+
+	l2Node, l2Info, _, cleanL2Node = createL2Node(ctx, t, hotShotUrl, builder, true)
+	defer cleanL2Node()
+
+	scheduleArbOSUpgrade(t, &l2auth, builder)
+
+	postEspressoAccount := "postEspressoAccount1"
+	err = checkTransferTxOnL2(t, ctx, builder.L2, postEspressoAccount, builder.L2Info)
+	Require(t, err)
+
+	postEspressoAccount2 := "postEspressoAccount2"
+	err = checkTransferTxOnL2(t, ctx, builder.L2, postEspressoAccount2, builder.L2Info)
+	Require(t, err)
+
+	postEspressoAccount3 := "postEspressoAccount3"
+	err = checkTransferTxOnL2(t, ctx, builder.L2, postEspressoAccount3, builder.L2Info)
+	Require(t, err)
+
+	postEspressoAccount4 := "postEspressoAccount4"
+	err = checkTransferTxOnL2(t, ctx, builder.L2, postEspressoAccount4, builder.L2Info)
+	Require(t, err)
+
+	//TODO: the above transfers seem to execute successfully, but the validation count doesn't appear to increase, and various ammounts of validation error messages seem to be appearing during the test.
+
+	// Remember the number of messages
+	err = waitFor(t, ctx, func() bool {
+		cnt, err := builder.L2.ConsensusNode.TxStreamer.GetMessageCount()
+		Require(t, err)
+		msgCnt = cnt
+		log.Info("waiting for message count", "cnt", msgCnt)
+		return msgCnt > 5
+	})
+	Require(t, err)
+
+	// Wait for the number of validated messages to catch up
+	err = waitForWith(t, ctx, 360*time.Second, 5*time.Second, func() bool {
+		validatedCnt := builder.L2.ConsensusNode.BlockValidator.Validated(t)
+		log.Info("waiting for validation", "validatedCnt", validatedCnt, "msgCnt", msgCnt)
+		return validatedCnt >= msgCnt
+	})
+	Require(t, err)
+	log.Info("Successfully ran the test")
 }
