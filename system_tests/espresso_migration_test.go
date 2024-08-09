@@ -12,9 +12,9 @@ import (
 	espressoOspGen "github.com/offchainlabs/nitro/solgen/go/ospgen"
 	"github.com/offchainlabs/nitro/solgen/go/precompilesgen"
 	"github.com/offchainlabs/nitro/solgen/go/upgrade_executorgen"
+	"github.com/offchainlabs/nitro/system_tests/non-espresso-nitro-contracts/go/rollupgen"
 	"github.com/offchainlabs/nitro/util/arbmath"
 	"github.com/offchainlabs/nitro/util/headerreader"
-	"math/big"
 	"os/exec"
 	"strings"
 	"testing"
@@ -24,6 +24,17 @@ import (
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/offchainlabs/nitro/arbutil"
 )
+
+type PostTestAssertionParams struct {
+	challengeManagerAddr     common.Address
+	challengeManagerImplAddr common.Address
+	challengeManager         *challengegen.ChallengeManager
+	oldOspEntryAddress       common.Address
+	newOspEntry              common.Address
+	oldWasmModuleRoot        common.Hash
+	newWasmModuleRoot        common.Hash
+	wasmRootAfterUpdate      common.Hash
+}
 
 func BuildNonEspressoNetwork(ctx context.Context, t *testing.T) (*NodeBuilder, *TestClient, *BlockchainTestInfo, *SecondNodeParams, func(), func()) {
 	cleanValNode := createValidationNode(ctx, t, false)
@@ -126,6 +137,24 @@ func DeployNewOspToL1(t *testing.T, ctx context.Context, l1client client, hotsho
 	return ospEntryAddr, nil
 }
 
+func errorIfHashesUnequal(hash1 common.Hash, hash2 common.Hash) error {
+	if hash1.Cmp(hash2) == 0 {
+		return nil
+	} else {
+		return fmt.Errorf("Hashes %s and %s are unequal", hash1, hash2)
+	}
+
+}
+
+func errorIfHashesEqual(hash1 common.Hash, hash2 common.Hash) error {
+	if hash1.Cmp(hash2) == 0 {
+		return fmt.Errorf("Hashes %s and %s are Equal", hash1, hash2)
+	} else {
+		return nil
+	}
+
+}
+
 // Name: errorIfAddressesEqual
 // Desc: test utility function that will throw an error if 2 addresses are equal, useful for checking contract upgrades have succeeded.
 func errorIfAddressesEqual(addr1 common.Address, addr2 common.Address) error {
@@ -145,57 +174,33 @@ func errorIfAddressesUnequal(addr1 common.Address, addr2 common.Address) error {
 }
 
 // Check all the post upgrade assertions in one place even if it induces an obscenely long function signature.
-func checkPostUpgradeAssertions(t *testing.T, proxyAdmin *mocksgen.ProxyAdminForBinding, callOpts *bind.CallOpts, challengeManagerAddress common.Address, challengeManagerImplAddr common.Address, challengeManager *challengegen.ChallengeManager, oldOspEntryAddress common.Address, newOspEntry common.Address) {
+func checkPostUpgradeAssertions(t *testing.T, proxyAdmin *mocksgen.ProxyAdminForBinding, callOpts *bind.CallOpts, params PostTestAssertionParams) {
 
-	updatedChallengeManagerImplAddr, err := proxyAdmin.GetProxyImplementation(callOpts, challengeManagerAddress)
+	updatedChallengeManagerImplAddr, err := proxyAdmin.GetProxyImplementation(callOpts, params.challengeManagerAddr)
 	Require(t, err)
 
 	//ensure the upgrade was actually a no-op
-	err = errorIfAddressesUnequal(challengeManagerImplAddr, updatedChallengeManagerImplAddr)
+	err = errorIfAddressesUnequal(params.challengeManagerImplAddr, updatedChallengeManagerImplAddr)
 	Require(t, err)
 
-	updatedOspAddr, err := challengeManager.Osp(callOpts)
+	updatedOspAddr, err := params.challengeManager.Osp(callOpts)
 	Require(t, err)
 
-	err = errorIfAddressesEqual(updatedOspAddr, oldOspEntryAddress)
+	err = errorIfAddressesEqual(updatedOspAddr, params.oldOspEntryAddress)
 	Require(t, err)
-	log.Info("updatedOspAddr", "updatedOspAddr", updatedOspAddr, "OldOspEntryAddress", oldOspEntryAddress, "newOspEntry", newOspEntry)
-	err = errorIfAddressesUnequal(updatedOspAddr, newOspEntry)
+	log.Info("updatedOspAddr", "updatedOspAddr", updatedOspAddr, "OldOspEntryAddress", params.oldOspEntryAddress, "newOspEntry", params.newOspEntry)
+	err = errorIfAddressesUnequal(updatedOspAddr, params.newOspEntry)
 	Require(t, err)
+	err = errorIfHashesEqual(params.newWasmModuleRoot, params.oldWasmModuleRoot)
+	Require(t, err)
+	err = errorIfHashesUnequal(params.newWasmModuleRoot, params.wasmRootAfterUpdate)
 }
 
-func transferTxOnL2(
-	t *testing.T,
-	ctx context.Context,
-	l2Node *TestClient,
-	account string,
-	l2Info *BlockchainTestInfo,
-) error {
-	transferAmount := big.NewInt(1e16)
-	tx := l2Info.PrepareTx("Faucet", account, 3e7, transferAmount, nil)
-
-	err := l2Node.Client.SendTransaction(ctx, tx)
-	if err != nil {
-		return err
-	}
-
-	addr := l2Info.GetAddress(account)
-
-	return waitForWith(t, ctx, time.Second*300, time.Second*1, func() bool {
-		balance := l2Node.GetBalance(t, addr)
-		log.Info("waiting for balance", "account", account, "addr", addr, "balance", balance)
-		return balance.Cmp(big.NewInt(100000)) >= 0
-	})
-}
-
-func upgradeContracts(t *testing.T, l1Auth *bind.TransactOpts, l2Auth *bind.TransactOpts, ctx context.Context, builder *NodeBuilder) {
+func upgradeContracts(t *testing.T, l1Auth *bind.TransactOpts, ctx context.Context, builder *NodeBuilder) {
 	l1Client := builder.L1.Client
-	//get the current wasmmoduleroot.
-	//locator, err := server_common.NewMachineLocator(builder.valnodeConfig.Wasm.RootPath)
-	//Require(t, err)
 
-	// wasmModuleRoot := locator.LatestWasmModuleRoot()
-	wasmModuleRoot := common.HexToHash("newWasmModuleRoot")
+	wasmModuleRoot := common.HexToHash("0x12345")
+	log.Info("New wasm module root", "rootHex", wasmModuleRoot.Hex(), "rootBytes", wasmModuleRoot.Bytes())
 
 	//deploy the new OSP contracts to the L1 and record their addresses/
 	newOspEntry, err := DeployNewOspToL1(t, ctx, builder.L1.Client, common.HexToAddress(builder.nodeConfig.BlockValidator.LightClientAddress), l1Auth)
@@ -221,7 +226,16 @@ func upgradeContracts(t *testing.T, l1Auth *bind.TransactOpts, l2Auth *bind.Tran
 	callData, err := callDataAbi.Pack("postUpgradeInit", newOspEntry, wasmModuleRoot, oldOspEntryAddress)
 	Require(t, err)
 
-	//rollupAdmin = rollupgen.new
+	rollupAddr := builder.L1Info.GetAddress("Rollup")
+	rollupCore, err := rollupgen.NewIRollupCore(rollupAddr, builder.L1.Client)
+	Require(t, err)
+	originalWasmRoot, err := rollupCore.WasmModuleRoot(builder.L1Info.GetDefaultCallOpts("RollupOwner", ctx))
+	Require(t, err)
+
+	rollupAbi, err := abi.JSON(strings.NewReader(rollupgen.IRollupAdminMetaData.ABI))
+	Require(t, err)
+	setWasmRootCallData, err := rollupAbi.Pack("setWasmModuleRoot", wasmModuleRoot)
+	Require(t, err)
 
 	proxyAdminSlot := common.BigToHash(arbmath.BigSub(crypto.Keccak256Hash([]byte("eip1967.proxy.admin")).Big(), common.Big1))
 	proxyAdminBytes, err := builder.L1.Client.StorageAt(ctx, challengeManagerAddress, proxyAdminSlot, nil)
@@ -252,10 +266,30 @@ func upgradeContracts(t *testing.T, l1Auth *bind.TransactOpts, l2Auth *bind.Tran
 	Require(t, err)
 
 	_, err = builder.L1.EnsureTxSucceeded(tx)
-
 	Require(t, err)
 
-	checkPostUpgradeAssertions(t, proxyAdmin, callOpts, challengeManagerAddress, challengeManagerImplAddr, challengeManager, oldOspEntryAddress, newOspEntry)
+	tx, err = upgradeExecutor.ExecuteCall(l1Auth, rollupAddr, setWasmRootCallData)
+	Require(t, err)
+
+	_, err = builder.L1.EnsureTxSucceeded(tx)
+	Require(t, err)
+
+	wasmRootAfterUpdate, err := rollupCore.WasmModuleRoot(callOpts)
+	Require(t, err)
+
+	newWasmModuleRoot, err := rollupCore.WasmModuleRoot(builder.L1Info.GetDefaultCallOpts("RollupOwner", ctx))
+	log.Info("WasmModuleRoot", "newRoot", newWasmModuleRoot, "original", originalWasmRoot)
+	postUpgradeAssertionParams := PostTestAssertionParams{
+		challengeManagerAddr:     challengeManagerAddress,
+		challengeManagerImplAddr: challengeManagerImplAddr,
+		challengeManager:         challengeManager,
+		oldOspEntryAddress:       oldOspEntryAddress,
+		newOspEntry:              newOspEntry,
+		oldWasmModuleRoot:        originalWasmRoot,
+		newWasmModuleRoot:        newWasmModuleRoot,
+		wasmRootAfterUpdate:      wasmRootAfterUpdate,
+	}
+	checkPostUpgradeAssertions(t, proxyAdmin, callOpts, postUpgradeAssertionParams)
 
 	log.Info("Successfully upgraded smart contracts for espresso sequencing.")
 }
@@ -336,15 +370,9 @@ func TestEspressoMigration(t *testing.T) {
 	})
 	Require(t, err)
 
-	log.Info("Turn on espresso network after sequencing some default transactions.")
-
 	log.Info("Update relevant contracts on L1 to prepare for espresso sequencing.")
 
-	upgradeContracts(t, &auth, &l2auth, ctx, builder)
-
-	log.Info("Successfully upgraded the challenge manager to point to the new OSP entry.")
-
-	log.Info("Turn off non--espresso sequencing by stopping previous sequencer")
+	upgradeContracts(t, &auth, ctx, builder)
 
 	err = waitFor(t, ctx, func() bool {
 		cnt, err := node.ConsensusNode.TxStreamer.GetMessageCount()
@@ -362,12 +390,18 @@ func TestEspressoMigration(t *testing.T) {
 		return validatedCnt >= msgCnt
 	})
 	Require(t, err)
+
+	log.Info("Successfully upgraded the challenge manager to point to the new OSP entry.")
+
+	log.Info("Turn off non--espresso sequencing by stopping previous sequencer")
+
 	//maybe wait here for contract upgrades?
 	cleanL2Node()
 
 	//	cleanL2Node()
 
 	// create L2 node in espresso mode here
+	log.Info("Turn on espresso network after sequencing some default transactions.")
 
 	l2Node, l2Info, _, cleanL2Node = createL2Node(ctx, t, hotShotUrl, builder, true)
 	defer cleanL2Node()
@@ -390,6 +424,10 @@ func TestEspressoMigration(t *testing.T) {
 	err = checkTransferTxOnL2(t, ctx, builder.L2, postEspressoAccount4, builder.L2Info)
 	Require(t, err)
 
+	postEspressoAccount5 := "postEspressoAccount5"
+	err = checkTransferTxOnL2(t, ctx, builder.L2, postEspressoAccount5, builder.L2Info)
+	Require(t, err)
+
 	//TODO: the above transfers seem to execute successfully, but the validation count doesn't appear to increase, and various ammounts of validation error messages seem to be appearing during the test.
 
 	// Remember the number of messages
@@ -398,7 +436,7 @@ func TestEspressoMigration(t *testing.T) {
 		Require(t, err)
 		msgCnt = cnt
 		log.Info("waiting for message count", "cnt", msgCnt)
-		return msgCnt > 5
+		return msgCnt > 9
 	})
 	Require(t, err)
 

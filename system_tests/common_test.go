@@ -766,6 +766,7 @@ func DeployOnTestL1(
 	 //Include the addresses for the Osp and ChallengeManager in the l1info for use in the tests.
 	l1info.SetContract("OspEntry", ospAddr)
 	l1info.SetContract("ChallengeManager", challengeManager)
+	l1info.SetContract("Rollup", addresses.Rollup)
 	initMessage := getInitMessage(ctx, t, l1client, addresses)
 	return addresses, initMessage
 
