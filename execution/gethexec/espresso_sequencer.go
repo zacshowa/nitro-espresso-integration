@@ -92,7 +92,7 @@ func (s *EspressoSequencer) createBlock(ctx context.Context) (returnValue bool) 
 	}
 
 	jst := &arbostypes.EspressoBlockJustification{
-		Header:    header,
+		Header:    &header,
 		VidCommon: &arbTxns.VidCommon,
 		Proof:     &arbTxns.Proof,
 	}
@@ -134,7 +134,7 @@ func (s *EspressoSequencer) PublishTransaction(parentCtx context.Context, tx *ty
 		Namespace: s.namespace,
 		Payload:   txnBytes,
 	}
-	if err := s.hotShotState.client.SubmitTransaction(parentCtx, txn); err != nil {
+	if _, err := s.hotShotState.client.SubmitTransaction(parentCtx, txn); err != nil {
 		log.Error("Failed to submit transaction", "err", err)
 		return err
 	}
