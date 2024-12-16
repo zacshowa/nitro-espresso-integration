@@ -181,13 +181,14 @@ type BatchPosterConfig struct {
 	gasRefunder                    common.Address
 	l1BlockBound                   l1BlockBound
 	// Espresso specific flags
-	LightClientAddress           string        `koanf:"light-client-address"`
-	HotShotUrl                   string        `koanf:"hotshot-url"`
-	UserDataAttestationFile      string        `koanf:"user-data-attestation-file"`
-	QuoteFile                    string        `koanf:"quote-file"`
-	UseEscapeHatch               bool          `koanf:"use-escape-hatch"`
-	EspressoTxnsPollingInterval  time.Duration `koanf:"espresso-txns-polling-interval"`
-	EspressoSwitchDelayThreshold uint64        `koanf:"espresso-switch-delay-threshold"`
+	LightClientAddress           string         `koanf:"light-client-address"`
+	HotShotUrl                   string         `koanf:"hotshot-url"`
+	UserDataAttestationFile      string         `koanf:"user-data-attestation-file"`
+	QuoteFile                    string         `koanf:"quote-file"`
+	UseEscapeHatch               bool           `koanf:"use-escape-hatch"`
+	EspressoTxnsPollingInterval  time.Duration  `koanf:"espresso-txns-polling-interval"`
+	EspressoSwitchDelayThreshold uint64         `koanf:"espresso-switch-delay-threshold"`
+   EspressoTEEVerifierAdddress  common.Address `koanf:"espresso-tee-verifier-address"`
 }
 
 func (c *BatchPosterConfig) Validate() error {
@@ -387,6 +388,7 @@ func NewBatchPoster(ctx context.Context, opts *BatchPosterOpts) (*BatchPoster, e
 		opts.Streamer.UseEscapeHatch = opts.Config().UseEscapeHatch
 		opts.Streamer.espressoTxnsPollingInterval = opts.Config().EspressoTxnsPollingInterval
 		opts.Streamer.espressoSwitchDelayThreshold = opts.Config().EspressoSwitchDelayThreshold
+       opts.Streamer.espressoTEEVerifierAddress = opts.Config().EspressoTEEVerifierAdddress
 	}
 
 	b := &BatchPoster{
@@ -1826,16 +1828,7 @@ func (b *BatchPoster) Start(ctxIn context.Context) {
 		espressoEphemeralErrorHandler.Reset()
 	}
 	b.CallIteratively(func(ctx context.Context) time.Duration {
-		var err error
-		espresso, _ := b.streamer.isEspressoMode()
-		if !espresso {
-			if b.streamer.lightClientReader != nil && b.streamer.espressoClient != nil {
-				// This mostly happens when a non-espresso nitro is upgrading to espresso nitro.
-				// The batch poster is set a espresso client and a light client reader, but waiting
-				// for the upgrade action
-				return b.config().PollInterval
-			}
-		}
+		var err error	
 		if common.HexToAddress(b.config().GasRefunderAddress) != (common.Address{}) {
 			gasRefunderBalance, err := b.l1Reader.Client().BalanceAt(ctx, common.HexToAddress(b.config().GasRefunderAddress), nil)
 			if err != nil {
