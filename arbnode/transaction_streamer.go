@@ -1764,10 +1764,7 @@ func getLogLevel(err error) func(string, ...interface{}) {
 
 func (s *TransactionStreamer) espressoSwitch(ctx context.Context, ignored struct{}) time.Duration {
 	retryRate := s.espressoTxnsPollingInterval * 50
-	enabledEspresso, err := s.espressoTEEVerifierAddress != common.Address{}
-	if err != nil {
-		return retryRate
-	}
+	enabledEspresso := s.espressoTEEVerifierAddress != common.Address{}
 	if enabledEspresso {
 		err := s.toggleEscapeHatch(ctx)
 		if err != nil {
